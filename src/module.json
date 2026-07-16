@@ -1,0 +1,21 @@
+{
+  "id": "noisemaker",
+  "name": "Noisemaker",
+  "abbrev": "NM",
+  "version": "0.1.0-m1",
+  "description": "Virtual-analog synth ported from TAL Noisemaker (Patrick Kunz). 6-voice, dual osc + sub, multimode filter, 2 LFOs, chorus + reverb.",
+  "author": "legsmechanical (engine: Patrick Kunz / TAL)",
+  "license": "GPL-2.0",
+  "ui": "ui.js",
+  "dsp": "dsp.so",
+  "api_version": 2,
+  "capabilities": {
+    "audio_out": true,
+    "audio_in": false,
+    "midi_in": true,
+    "midi_out": false,
+    "aftertouch": true,
+    "chainable": true,
+    "component_type": "sound_generator"
+  }
+}
