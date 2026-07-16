@@ -14,7 +14,7 @@
     "audio_in": false,
     "midi_in": true,
     "midi_out": false,
-    "aftertouch": true,
+    "aftertouch": false,
     "chainable": true,
     "component_type": "sound_generator"
   }

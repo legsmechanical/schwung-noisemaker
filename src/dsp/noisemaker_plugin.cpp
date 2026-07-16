@@ -344,6 +344,12 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
 static void load_preset(nm_instance_t *inst, int idx) {
     if (idx < 0 || idx >= NM_FACTORY_COUNT) return;
     inst->cur_preset = idx;
+    /* Release everything first: applying VOICES calls setNumberOfVoices, which
+     * clears VoiceManager::playingNotes WITHOUT note-offing the voices — a note
+     * held across a preset switch would never see its note-off (stuck note),
+     * and poly->mono switches would strand poly voices entirely. reset() is a
+     * graceful release (setNoteOff on all voices), not a hard kill. */
+    inst->synth->setPanic();
     const nm_factory_preset_t *p = &NM_FACTORY_BANK[idx];
     for (int i = 1; i < NUMPARAM; i++) {          // skip UNKNOWN(0)
         if (i == PANIC || i == MIDILEARN) continue;
@@ -532,6 +538,7 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             break;
         }
         case 0xE0: { // pitch bend -> normalized -1..1
+            if (len < 3) break;  // torn 2-byte bend would read as full-down
             int bend = ((d2 << 7) | d1) - 8192;
             inst->synth->setPitchwheelAmount(bend / 8192.0f);
             break;
