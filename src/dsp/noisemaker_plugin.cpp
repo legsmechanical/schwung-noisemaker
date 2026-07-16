@@ -20,6 +20,7 @@
 
 #include "Engine/SynthEngine.h"   // header-only TAL engine (single translation unit)
 #include "Engine/Params.h"        // SYNTHPARAMETERS enum + NUMPARAM
+#include "factory_bank.h"         // NM_FACTORY_BANK[128] (generated; engine-space)
 
 /* ---- host / plugin ABI (copied from schwung/src/host/plugin_api_v1.h so the
  *      module builds without the host source tree on the include path) ---- */
@@ -249,7 +250,7 @@ typedef struct {
     int         octave_transpose;
     float       tempo_bpm;
     int         editor_page;     // canvas overlay state (persists per instance)
-    char        preset_name[64];
+    int         cur_preset;      // index into NM_FACTORY_BANK, -1 == Init (default patch)
 } nm_instance_t;
 
 static const param_def_t *find_param(const char *key) {
@@ -289,6 +290,7 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case OSC2FINETUNE:   e->setOsc2FineTune(v); break;
         case OSCSYNC:        e->setOscSync(v > 0.0f); break;
         case OSCMASTERTUNE:  e->setMastertune(v); break;
+        case TRANSPOSE:      e->setTranspose(v); break;   // preset-driven (0.5 == 0 semis)
         case DETUNE:         e->setDetune(v); break;
         case OSC1PW:         e->setOsc1Pw(v); break;
         case OSC1PHASE:      e->setOsc1Phase(v); break;
@@ -332,6 +334,20 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case REVERBLOWCUT:    e->setReverbLowCut(v); break;
         case VOICES:          e->setNumberOfVoices((int)(v + 0.5f)); break;
         default: break;
+    }
+}
+
+/* Load one factory program: push every engine-space value through apply_engine
+ * in enum order. That order already satisfies the cross-dep setters (LFO rates
+ * precede their SYNC entries, CHORUS1/2 are adjacent and read inst->eng which
+ * is updated as we go); values are raw programData — no display conversion. */
+static void load_preset(nm_instance_t *inst, int idx) {
+    if (idx < 0 || idx >= NM_FACTORY_COUNT) return;
+    inst->cur_preset = idx;
+    const nm_factory_preset_t *p = &NM_FACTORY_BANK[idx];
+    for (int i = 1; i < NUMPARAM; i++) {          // skip UNKNOWN(0)
+        if (i == PANIC || i == MIDILEARN) continue;
+        apply_engine(inst, i, p->programData[i]);
     }
 }
 
@@ -474,7 +490,7 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     if (inst->tempo_bpm <= 0.0f) inst->tempo_bpm = 120.0f;
     inst->octave_transpose = 0;
     inst->editor_page = 0;
-    strncpy(inst->preset_name, "Init", sizeof(inst->preset_name) - 1);
+    inst->cur_preset = -1;
 
     inst->synth = new SynthEngine((float)MOVE_SAMPLE_RATE);
     inst->synth->setNumberOfVoices(NM_NUM_VOICES);
@@ -482,6 +498,7 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     for (int i = 0; i < NUMPARAM; i++) inst->eng[i] = 0.0f;
     for (int i = 0; i < DEFAULT_PATCH_COUNT; i++)
         apply_engine(inst, DEFAULT_PATCH[i].index, DEFAULT_PATCH[i].value);
+    load_preset(inst, 0);   /* factory startup patch; host preset recall overrides */
     return inst;
 }
 
@@ -534,7 +551,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     if (strcmp(key, "all_notes_off") == 0) { inst->synth->setPanic(); return; }
     if (strcmp(key, "octave_transpose") == 0) { inst->octave_transpose = atoi(val); return; }
     if (strcmp(key, "noisemaker_editor") == 0) { inst->editor_page = atoi(val); return; }
-    if (strcmp(key, "preset") == 0) { /* preset banks: TODO (factory .talnm import) */ return; }
+    if (strcmp(key, "preset") == 0) {
+        int idx = atoi(val);
+        if (idx >= 0 && idx < NM_FACTORY_COUNT && idx != inst->cur_preset)
+            load_preset(inst, idx);
+        return;
+    }
 
     const param_def_t *p = find_param(key);
     if (!p) return;
@@ -550,11 +572,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "chain_params") == 0)
         return build_chain_params(buf, buf_len);
     if (strcmp(key, "preset_name") == 0)
-        return snprintf(buf, buf_len, "%s", inst->preset_name);
+        return snprintf(buf, buf_len, "%s",
+            (inst->cur_preset >= 0 && inst->cur_preset < NM_FACTORY_COUNT)
+                ? NM_FACTORY_BANK[inst->cur_preset].name : "Init");
     if (strcmp(key, "preset_count") == 0)
-        return snprintf(buf, buf_len, "1");
+        return snprintf(buf, buf_len, "%d", NM_FACTORY_COUNT);
     if (strcmp(key, "preset") == 0)
-        return snprintf(buf, buf_len, "0");
+        return snprintf(buf, buf_len, "%d", inst->cur_preset < 0 ? 0 : inst->cur_preset);
     if (strcmp(key, "octave_transpose") == 0)
         return snprintf(buf, buf_len, "%d", inst->octave_transpose);
     if (strcmp(key, "noisemaker_editor") == 0)
