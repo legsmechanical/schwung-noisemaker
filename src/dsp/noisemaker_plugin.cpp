@@ -83,7 +83,8 @@ enum ParamKind {
     K_BIPOLAR,  // norm 0..1   <-> display 0..100 (50 center); UI shows +/-
     K_TOGGLE,   // norm 0/1    <-> display 0/1
     K_INT,      // combo count <-> display imin..imax (e.g. voices 1..6)
-    K_ENUM      // combo       <-> display index 0..n_opts-1
+    K_ENUM,     // combo       <-> display index 0..n_opts-1 (calcComboBoxValue)
+    K_LFOWAVE   // LFO waveform: engine (int)(norm*5) -> 0..5; NOT the combo formula
 };
 
 #define MAX_ENUM_OPTS 12
@@ -156,7 +157,8 @@ static const param_def_t PARAMS[] = {
   { "aenv_r",        "Amp Release",   AMPRELEASE,    K_PCT,    0,0, 0,{0} },
 
   /* ---- LFO 1 ---- */
-  { "lfo1_wave",     "LFO1 Wave",     LFO1WAVEFORM,  K_PCT,    0,0, 0,{0} },
+  { "lfo1_wave",     "LFO1 Wave",     LFO1WAVEFORM,  K_LFOWAVE,0,0, 6,
+        {"Sin","Tri","Saw","Sqr","S+H","Rnd"} },
   { "lfo1_rate",     "LFO1 Rate",     LFO1RATE,      K_PCT,    0,0, 0,{0} },
   { "lfo1_amount",   "LFO1 Amount",   LFO1AMOUNT,    K_PCT,    0,0, 0,{0} },
   { "lfo1_dest",     "LFO1 Dest",     LFO1DESTINATION,K_ENUM,  0,0, 8,
@@ -166,7 +168,8 @@ static const param_def_t PARAMS[] = {
   { "lfo1_phase",    "LFO1 Phase",    LFO1PHASE,     K_PCT,    0,0, 0,{0} },
 
   /* ---- LFO 2 ---- */
-  { "lfo2_wave",     "LFO2 Wave",     LFO2WAVEFORM,  K_PCT,    0,0, 0,{0} },
+  { "lfo2_wave",     "LFO2 Wave",     LFO2WAVEFORM,  K_LFOWAVE,0,0, 6,
+        {"Sin","Tri","Saw","Sqr","S+H","Rnd"} },
   { "lfo2_rate",     "LFO2 Rate",     LFO2RATE,      K_PCT,    0,0, 0,{0} },
   { "lfo2_amount",   "LFO2 Amount",   LFO2AMOUNT,    K_PCT,    0,0, 0,{0} },
   { "lfo2_dest",     "LFO2 Dest",     LFO2DESTINATION,K_ENUM,  0,0, 8,
@@ -377,6 +380,12 @@ static float disp_to_engine(const param_def_t *p, const char *val) {
             return combo_idx_to_norm(iv - p->imin, p->n_opts);         // 1..6 -> norm
         }
         case K_ENUM:    return combo_idx_to_norm(atoi(val), p->n_opts);
+        case K_LFOWAVE: {                                             // idx 0..5 -> norm
+            int iv = atoi(val);
+            if (iv < 0) iv = 0;
+            if (iv > p->n_opts - 1) iv = p->n_opts - 1;
+            return (float)iv / (float)(p->n_opts - 1);
+        }
     }
     return 0.0f;
 }
@@ -388,6 +397,13 @@ static void engine_to_disp(const param_def_t *p, float norm, char *buf, int len)
         case K_TOGGLE:  snprintf(buf, len, "%d", norm > 0.5f ? 1 : 0); break;
         case K_INT:     snprintf(buf, len, "%d", p->imin + combo_norm_to_idx(norm, p->n_opts)); break;
         case K_ENUM:    snprintf(buf, len, "%d", combo_norm_to_idx(norm, p->n_opts)); break;
+        case K_LFOWAVE: {                                            // norm -> idx 0..5 (engine (int)(norm*5))
+            int idx = (int)(norm * 5.000001f);
+            if (idx < 0) idx = 0;
+            if (idx > p->n_opts - 1) idx = p->n_opts - 1;
+            snprintf(buf, len, "%d", idx);
+            break;
+        }
         default:        snprintf(buf, len, "0"); break;
     }
 }
@@ -481,7 +497,8 @@ static int build_chain_params(char *buf, int len) {
                     "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"int\",\"min\":%d,\"max\":%d}",
                     p->key, p->name, p->imin, p->imax);
                 break;
-            case K_ENUM: {
+            case K_ENUM:
+            case K_LFOWAVE: {
                 n += snprintf(buf + n, len - n,
                     "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"enum\",\"options\":[", p->key, p->name);
                 for (int o = 0; o < p->n_opts; o++)
