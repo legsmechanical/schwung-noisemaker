@@ -633,6 +633,58 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     }
 }
 
+/* ---- minimal JSON getters for the slot "state" blob (per obxd) ---- */
+static int nm_json_get_number(const char *json, const char *key, float *out) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *pos = strstr(json, search);
+    if (!pos) return -1;
+    pos += strlen(search);
+    while (*pos == ' ') pos++;
+    *out = (float)atof(pos);
+    return 0;
+}
+
+/* Serialize the full instance state (preset + octave + every param as its
+ * display value) so the host can autosave the slot and the module-preset
+ * feature can capture it. Restored by set_param("state", ...). */
+static int build_state(nm_instance_t *inst, char *buf, int buf_len) {
+    int n = 0;
+    n += snprintf(buf + n, buf_len - n, "{\"preset\":%d,\"octave_transpose\":%d",
+                  inst->cur_preset, inst->octave_transpose);
+    char v[32];
+    for (int i = 0; i < NM_PARAM_COUNT && n < buf_len - 64; i++) {
+        engine_to_disp(&PARAMS[i], inst->eng[PARAMS[i].engine_index], v, sizeof(v));
+        n += snprintf(buf + n, buf_len - n, ",\"%s\":%s", PARAMS[i].key, v);
+    }
+    n += snprintf(buf + n, buf_len - n, "}");
+    return n;
+}
+
+/* Restore from a state blob: apply the preset first (installs its envelope
+ * shape + base param values), then overlay every stored param value. */
+static void restore_state(nm_instance_t *inst, const char *json) {
+    float f;
+    if (nm_json_get_number(json, "preset", &f) == 0) {
+        int idx = (int)f;
+        if (idx >= 0 && idx < NM_FACTORY_COUNT) load_preset(inst, idx);
+    }
+    if (nm_json_get_number(json, "octave_transpose", &f) == 0)
+        inst->octave_transpose = (int)f;
+    for (int i = 0; i < NM_PARAM_COUNT; i++) {
+        char search[64];
+        snprintf(search, sizeof(search), "\"%s\":", PARAMS[i].key);
+        const char *pos = strstr(json, search);
+        if (!pos) continue;
+        pos += strlen(search);
+        while (*pos == ' ') pos++;
+        char dv[32]; int j = 0;
+        while (*pos && *pos != ',' && *pos != '}' && j < (int)sizeof(dv) - 1) dv[j++] = *pos++;
+        dv[j] = '\0';
+        apply_engine(inst, PARAMS[i].engine_index, disp_to_engine(&PARAMS[i], dv));
+    }
+}
+
 static void v2_set_param(void *instance, const char *key, const char *val) {
     nm_instance_t *inst = (nm_instance_t *)instance;
     if (!inst || !key || !val) return;
@@ -640,6 +692,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     if (strcmp(key, "all_notes_off") == 0) { inst->synth->setPanic(); return; }
     if (strcmp(key, "octave_transpose") == 0) { inst->octave_transpose = atoi(val); return; }
     if (strcmp(key, "editor") == 0) { inst->editor_page = atoi(val); return; }
+    if (strcmp(key, "state") == 0) { restore_state(inst, val); return; }
     if (strcmp(key, "preset") == 0) {
         int idx = atoi(val);
         if (idx >= 0 && idx < NM_FACTORY_COUNT && idx != inst->cur_preset)
@@ -660,6 +713,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%s", kUiHierarchy);
     if (strcmp(key, "chain_params") == 0)
         return build_chain_params(buf, buf_len);
+    if (strcmp(key, "name") == 0)
+        return snprintf(buf, buf_len, "Noisemaker");
+    if (strcmp(key, "state") == 0)
+        return build_state(inst, buf, buf_len);
     if (strcmp(key, "preset_name") == 0)
         return snprintf(buf, buf_len, "%s",
             (inst->cur_preset >= 0 && inst->cur_preset < NM_FACTORY_COUNT)
