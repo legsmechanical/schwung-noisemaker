@@ -63,10 +63,14 @@ typedef struct plugin_api_v2 {
 
 #define MOVE_PLUGIN_API_VERSION_2 2
 
-/* Native poly. TAL's voice loops iterate MAX_VOICES-1 (=5 active with
- * VoiceManager::MAX_VOICES==6); we request the engine's full count here and
- * verify the audible voice ceiling on-device (see CLAUDE.md fidelity notes). */
-#define NM_NUM_VOICES 6
+/* Native poly. The TAL engine renders only MAX_VOICES-1 (=5) voices — every
+ * setter AND SynthEngine::process iterate `i < MAX_VOICES - 1` (upstream), so
+ * voices[MAX_VOICES-1] is a never-rendered phantom. We keep MAX_VOICES=6
+ * byte-verbatim and CLAMP allocation to 5 (NM_MAX_POLY) so no note ever lands
+ * on the phantom (that was the "notes drop / stealing breaks" defect). Combined
+ * with our LRU getNewVoice, this gives clean 5-voice stealing. */
+#define NM_MAX_POLY   5
+#define NM_NUM_VOICES 5
 
 static const host_api_v1_t *g_host = NULL;
 
@@ -205,7 +209,7 @@ static const param_def_t PARAMS[] = {
   /* ---- Voicing ---- */
   { "portamento",    "Portamento",    PORTAMENTO,    K_PCT,    0,0, 0,{0},{0} },
   { "porta_mode",    "Porta Mode",    PORTAMENTOMODE,K_TOGGLE, 0,0, 0,{0},{0} },
-  { "voices",        "Voices",        VOICES,        K_INT,    1,6, 0,{0},{0} },
+  { "voices",        "Voices",        VOICES,        K_INT,    1,NM_MAX_POLY, 0,{0},{0} },
 
   /* ---- Chorus / Reverb ---- */
   { "chorus1",       "Chorus I",      CHORUS1ENABLE, K_TOGGLE, 0,0, 0,{0},{0} },
@@ -335,7 +339,13 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case REVERBPREDELAY:  e->setReverbPreDelay(v); break;
         case REVERBHIGHCUT:   e->setReverbHighCut(v); break;
         case REVERBLOWCUT:    e->setReverbLowCut(v); break;
-        case VOICES:          e->setNumberOfVoices((int)(v + 0.5f)); break;
+        case VOICES: {
+            int nv = (int)(v + 0.5f);
+            if (nv < 1) nv = 1;
+            if (nv > NM_MAX_POLY) nv = NM_MAX_POLY;   // never allocate the phantom voice
+            e->setNumberOfVoices(nv);
+            break;
+        }
         default: break;
     }
 }
