@@ -1,14 +1,20 @@
 /*
  * Noisemaker — Schwung plugin_api_v2 wrapper around the TAL Noisemaker engine.
  *
- * The DSP engine (src/dsp/Engine + src/dsp/Effects) is Patrick Kunz's TAL
- * Noisemaker, GPLv2, vendored verbatim from github.com/Nexbit/tal-noisemaker
- * (see LICENSE). This file is the thin host adapter: it owns a SynthEngine per
- * instance, converts its float stereo output to Move's int16 interleaved
- * buffer, dispatches MIDI, and exposes a string-keyed parameter surface plus
- * the ui_hierarchy / chain_params JSON the Shadow UI + canvas overlay consume.
+ * Engine (src/dsp/Engine + src/dsp/Effects) = Patrick Kunz's TAL Noisemaker,
+ * GPLv2, vendored byte-verbatim from the DISTRHO-Ports tal-noisemaker source
+ * (the current TAL codebase: true 6-voice, Delay, Filter Drive, Vintage Noise,
+ * Moog/State-Variable filters). This file is the thin host adapter.
  *
- * Modelled on schwung-obxd/src/dsp/obxd_plugin.cpp.
+ * PARAM MODEL (differs from the older Nexbit port): the engine's setters take
+ * NORMALIZED 0..1 for EVERYTHING — continuous params AND combo/enum params
+ * (they convert internally via AudioUtils::calcComboBoxValue). So this wrapper
+ * stores normalized values in inst->eng[] and passes them straight through in
+ * apply_engine(); the only conversion is at the display boundary (disp<->norm),
+ * where enums map a 0-based display index to the combo's normalized value.
+ *
+ * The drawable Envelope Editor mod source is deferred (JUCE-dependent); see
+ * src/dsp/EnvelopeEditor/ stubs. Its params are accepted but inert.
  */
 
 #include <cstdint>
@@ -20,10 +26,9 @@
 
 #include "Engine/SynthEngine.h"   // header-only TAL engine (single translation unit)
 #include "Engine/Params.h"        // SYNTHPARAMETERS enum + NUMPARAM
-#include "factory_bank.h"         // NM_FACTORY_BANK[128] (generated; engine-space)
+#include "factory_bank.h"         // NM_FACTORY_BANK[] (generated; normalized values)
 
-/* ---- host / plugin ABI (copied from schwung/src/host/plugin_api_v1.h so the
- *      module builds without the host source tree on the include path) ---- */
+/* ---- host / plugin ABI ---- */
 #ifndef MOVE_SAMPLE_RATE
 #define MOVE_SAMPLE_RATE 44100
 #endif
@@ -63,36 +68,25 @@ typedef struct plugin_api_v2 {
 
 #define MOVE_PLUGIN_API_VERSION_2 2
 
-/* Native poly. The TAL engine renders only MAX_VOICES-1 (=5) voices — every
- * setter AND SynthEngine::process iterate `i < MAX_VOICES - 1` (upstream), so
- * voices[MAX_VOICES-1] is a never-rendered phantom. We keep MAX_VOICES=6
- * byte-verbatim and CLAMP allocation to 5 (NM_MAX_POLY) so no note ever lands
- * on the phantom (that was the "notes drop / stealing breaks" defect). Combined
- * with our LRU getNewVoice, this gives clean 5-voice stealing. */
-#define NM_MAX_POLY   5
-#define NM_NUM_VOICES 5
+/* Native poly. The DISTRHO engine renders all MAX_VOICES=6 voices (the old
+ * "phantom voice / notes drop at limit" bug is gone). setNumberOfVoices takes a
+ * NORMALIZED value; 1.0 -> combo 6. */
+#define NM_NUM_VOICES 6
 
 static const host_api_v1_t *g_host = NULL;
 
 /* ======================================================================== *
  *  Parameter surface
- *
- *  Every exposed param maps to one SYNTHPARAMETERS enum index and a "kind"
- *  that defines the engine<->display conversion. The engine stores everything
- *  the way TAL's programData does (0..1 for continuous, small ints for the
- *  discrete ones); the Shadow UI works in integer display units, so we scale
- *  at the boundary exactly like the OB-Xd port.
  * ======================================================================== */
-
 enum ParamKind {
-    K_PCT,      // engine 0..1   <-> display 0..100
-    K_BIPOLAR,  // engine 0..1   <-> display 0..100 (50 == center; canvaskit bip)
-    K_TOGGLE,   // engine 0/1    <-> display 0/1
-    K_INT,      // engine int    <-> display int (passed straight through)
-    K_ENUM      // engine value from enum_vals[idx] <-> display index 0..n-1
+    K_PCT,      // norm 0..1   <-> display 0..100
+    K_BIPOLAR,  // norm 0..1   <-> display 0..100 (50 center); UI shows +/-
+    K_TOGGLE,   // norm 0/1    <-> display 0/1
+    K_INT,      // combo count <-> display imin..imax (e.g. voices 1..6)
+    K_ENUM      // combo       <-> display index 0..n_opts-1
 };
 
-#define MAX_ENUM_OPTS 8
+#define MAX_ENUM_OPTS 12
 
 typedef struct {
     const char *key;
@@ -100,150 +94,147 @@ typedef struct {
     int         engine_index;   // SYNTHPARAMETERS
     ParamKind   kind;
     int         imin, imax;     // K_INT range
-    int         n_opts;         // K_ENUM
+    int         n_opts;         // K_ENUM combo-item count
     const char *opts[MAX_ENUM_OPTS];
-    float       enum_vals[MAX_ENUM_OPTS]; // engine value per enum option
 } param_def_t;
 
-/* Discrete-option tables ------------------------------------------------- */
-/* Osc1 waveform zones (getOsc1Waveform: <0.5 SAW, <1.0 PULSE, else NOISE). */
-#define OSC1_WAVES 3
-/* Osc2 waveform zones (getOsc2Waveform: quartiles SAW/PULSE/TRIANGLE/SIN). */
-#define OSC2_WAVES 4
-/* Filter type: 0=Off then case 1..7 in FilterHandler. */
-#define FILT_TYPES 8
-/* LFO destination: setLfoNDestination switch cases 1..7 (value stored 1..7). */
-#define LFO_DESTS 7
-/* Free-envelope destination — same handler family; verify on-device. */
-#define FREE_DESTS 5
-
-/* NOTE: LFO waveform + free-AD destination option *labels* are best-effort and
- * flagged for on-device verification; the engine mapping (the enum_vals) is
- * what actually drives sound and is safe (evenly spaced representative values). */
+/* Combo item counts must match AudioUtils::getNumComboBoxItems. */
+static const char *FILT_OPTS[] = {"LP24","LP18","LP12","LP6","HP24","BP24","Notch",
+                                  "SV-LP","SV-HP","SV-BP","Moog","Moog2"};      // 12
+static const char *OSC1_OPTS[] = {"Saw","Pulse","Noise"};                       // 3
+static const char *OSC2_OPTS[] = {"Saw","Pulse","Tri","Sine","Noise"};          // 5
+static const char *LDST1_OPTS[] = {"None","Filter","Osc1","Osc2","PW","FM","LFO2","Osc1+2"}; // 8
+static const char *LDST2_OPTS[] = {"None","Filter","Osc1","Osc2","PW","FM","LFO1","Osc1+2"}; // 8
+static const char *FDST_OPTS[] = {"Off","Filter","Osc1","Osc2","PW","FM"};      // 6
+static const char *PMODE_OPTS[] = {"Off","Auto","On"};                          // 3
 
 static const param_def_t PARAMS[] = {
   /* ---- Master ---- */
-  { "volume",        "Volume",        VOLUME,        K_PCT,    0,0, 0,{0},{0} },
-  { "highpass",      "High Pass",     HIGHPASS,      K_PCT,    0,0, 0,{0},{0} },
+  { "volume",        "Volume",        VOLUME,        K_PCT,    0,0, 0,{0} },
+  { "highpass",      "High Pass",     HIGHPASS,      K_PCT,    0,0, 0,{0} },
 
   /* ---- Oscillators ---- */
-  /* enum_vals sit at each waveform ZONE CENTER (getOsc*Waveform thresholds:
-   * osc1 splits 0.5/1.0; osc2 at thirds) so nearest-match readback of an
-   * arbitrary preset value lands in the right zone. */
-  { "osc1_wave",     "Osc1 Wave",     OSC1WAVEFORM,  K_ENUM,   0,0, OSC1_WAVES,
-        {"Saw","Pulse","Noise"}, {0.25f, 0.75f, 1.0f} },
-  { "osc2_wave",     "Osc2 Wave",     OSC2WAVEFORM,  K_ENUM,   0,0, OSC2_WAVES,
-        {"Saw","Pulse","Tri","Sine"}, {0.166f, 0.5f, 0.83f, 1.0f} },
-  { "osc1_vol",      "Osc1 Level",    OSC1VOLUME,    K_PCT,    0,0, 0,{0},{0} },
-  { "osc2_vol",      "Osc2 Level",    OSC2VOLUME,    K_PCT,    0,0, 0,{0},{0} },
-  { "osc3_vol",      "Sub Level",     OSC3VOLUME,    K_PCT,    0,0, 0,{0},{0} },
-  { "osc_tune",      "Master Tune",   OSCMASTERTUNE, K_BIPOLAR,0,0, 0,{0},{0} },
-  { "osc1_tune",     "Osc1 Tune",     OSC1TUNE,      K_BIPOLAR,0,0, 0,{0},{0} },
-  { "osc2_tune",     "Osc2 Tune",     OSC2TUNE,      K_BIPOLAR,0,0, 0,{0},{0} },
-  { "osc1_fine",     "Osc1 Fine",     OSC1FINETUNE,  K_BIPOLAR,0,0, 0,{0},{0} },
-  { "osc2_fine",     "Osc2 Fine",     OSC2FINETUNE,  K_BIPOLAR,0,0, 0,{0},{0} },
-  { "osc1_pw",       "Osc1 PW",       OSC1PW,        K_PCT,    0,0, 0,{0},{0} },
-  { "osc1_phase",    "Osc1 Phase",    OSC1PHASE,     K_PCT,    0,0, 0,{0},{0} },
-  { "osc2_phase",    "Osc2 Phase",    OSC2PHASE,     K_PCT,    0,0, 0,{0},{0} },
-  { "osc2_fm",       "Osc2 FM",       OSC2FM,        K_PCT,    0,0, 0,{0},{0} },
-  { "osc_sync",      "Osc Sync",      OSCSYNC,       K_TOGGLE, 0,0, 0,{0},{0} },
-  { "ringmod",       "Ring Mod",      RINGMODULATION,K_PCT,    0,0, 0,{0},{0} },
-  { "detune",        "Detune",        DETUNE,        K_PCT,    0,0, 0,{0},{0} },
-  { "bitcrush",      "Bitcrusher",    OSCBITCRUSHER, K_PCT,    0,0, 0,{0},{0} },
+  { "osc1_wave",     "Osc1 Wave",     OSC1WAVEFORM,  K_ENUM,   0,0, 3, {"Saw","Pulse","Noise"} },
+  { "osc2_wave",     "Osc2 Wave",     OSC2WAVEFORM,  K_ENUM,   0,0, 5, {"Saw","Pulse","Tri","Sine","Noise"} },
+  { "osc1_vol",      "Osc1 Level",    OSC1VOLUME,    K_PCT,    0,0, 0,{0} },
+  { "osc2_vol",      "Osc2 Level",    OSC2VOLUME,    K_PCT,    0,0, 0,{0} },
+  { "osc3_vol",      "Sub Level",     OSC3VOLUME,    K_PCT,    0,0, 0,{0} },
+  { "osc_tune",      "Master Tune",   OSCMASTERTUNE, K_BIPOLAR,0,0, 0,{0} },
+  { "osc1_tune",     "Osc1 Tune",     OSC1TUNE,      K_BIPOLAR,0,0, 0,{0} },
+  { "osc2_tune",     "Osc2 Tune",     OSC2TUNE,      K_BIPOLAR,0,0, 0,{0} },
+  { "osc1_fine",     "Osc1 Fine",     OSC1FINETUNE,  K_BIPOLAR,0,0, 0,{0} },
+  { "osc2_fine",     "Osc2 Fine",     OSC2FINETUNE,  K_BIPOLAR,0,0, 0,{0} },
+  { "osc1_pw",       "Osc1 PW",       OSC1PW,        K_PCT,    0,0, 0,{0} },
+  { "osc1_phase",    "Osc1 Phase",    OSC1PHASE,     K_PCT,    0,0, 0,{0} },
+  { "osc2_phase",    "Osc2 Phase",    OSC2PHASE,     K_PCT,    0,0, 0,{0} },
+  { "osc2_fm",       "Osc2 FM",       OSC2FM,        K_PCT,    0,0, 0,{0} },
+  { "osc_sync",      "Osc Sync",      OSCSYNC,       K_TOGGLE, 0,0, 0,{0} },
+  { "ringmod",       "Ring Mod",      RINGMODULATION,K_PCT,    0,0, 0,{0} },
+  { "detune",        "Detune",        DETUNE,        K_PCT,    0,0, 0,{0} },
+  { "bitcrush",      "Bitcrusher",    OSCBITCRUSHER, K_PCT,    0,0, 0,{0} },
+  { "vintage",       "Vintage",       VINTAGENOISE,  K_PCT,    0,0, 0,{0} },
 
   /* ---- Filter ---- */
-  { "filter_type",   "Filter Type",   FILTERTYPE,    K_ENUM,   0,0, FILT_TYPES,
-        {"Off","LP24","LP18","LP12","LP6","HP24","BP24","Notch"},
-        {0,1,2,3,4,5,6,7} },
-  { "cutoff",        "Cutoff",        CUTOFF,        K_PCT,    0,0, 0,{0},{0} },
-  { "resonance",     "Resonance",     RESONANCE,     K_PCT,    0,0, 0,{0},{0} },
-  { "keyfollow",     "Key Follow",    KEYFOLLOW,     K_PCT,    0,0, 0,{0},{0} },
-  { "filter_env",    "Filter Env",    FILTERCONTOUR, K_PCT,    0,0, 0,{0},{0} },
+  { "filter_type",   "Filter Type",   FILTERTYPE,    K_ENUM,   0,0, 12,
+        {"LP24","LP18","LP12","LP6","HP24","BP24","Notch","SV-LP","SV-HP","SV-BP","Moog","Moog2"} },
+  { "cutoff",        "Cutoff",        CUTOFF,        K_PCT,    0,0, 0,{0} },
+  { "resonance",     "Resonance",     RESONANCE,     K_PCT,    0,0, 0,{0} },
+  { "keyfollow",     "Key Follow",    KEYFOLLOW,     K_PCT,    0,0, 0,{0} },
+  { "filter_env",    "Filter Env",    FILTERCONTOUR, K_PCT,    0,0, 0,{0} },
+  { "filter_drive",  "Filter Drive",  FILTERDRIVE,   K_PCT,    0,0, 0,{0} },
 
   /* ---- Filter envelope ---- */
-  { "fenv_a",        "Filter Attack", FILTERATTACK,  K_PCT,    0,0, 0,{0},{0} },
-  { "fenv_d",        "Filter Decay",  FILTERDECAY,   K_PCT,    0,0, 0,{0},{0} },
-  { "fenv_s",        "Filter Sustain",FILTERSUSTAIN, K_PCT,    0,0, 0,{0},{0} },
-  { "fenv_r",        "Filter Release",FILTERRELEASE, K_PCT,    0,0, 0,{0},{0} },
+  { "fenv_a",        "Filter Attack", FILTERATTACK,  K_PCT,    0,0, 0,{0} },
+  { "fenv_d",        "Filter Decay",  FILTERDECAY,   K_PCT,    0,0, 0,{0} },
+  { "fenv_s",        "Filter Sustain",FILTERSUSTAIN, K_PCT,    0,0, 0,{0} },
+  { "fenv_r",        "Filter Release",FILTERRELEASE, K_PCT,    0,0, 0,{0} },
 
   /* ---- Amp envelope ---- */
-  { "aenv_a",        "Amp Attack",    AMPATTACK,     K_PCT,    0,0, 0,{0},{0} },
-  { "aenv_d",        "Amp Decay",     AMPDECAY,      K_PCT,    0,0, 0,{0},{0} },
-  { "aenv_s",        "Amp Sustain",   AMPSUSTAIN,    K_PCT,    0,0, 0,{0},{0} },
-  { "aenv_r",        "Amp Release",   AMPRELEASE,    K_PCT,    0,0, 0,{0},{0} },
+  { "aenv_a",        "Amp Attack",    AMPATTACK,     K_PCT,    0,0, 0,{0} },
+  { "aenv_d",        "Amp Decay",     AMPDECAY,      K_PCT,    0,0, 0,{0} },
+  { "aenv_s",        "Amp Sustain",   AMPSUSTAIN,    K_PCT,    0,0, 0,{0} },
+  { "aenv_r",        "Amp Release",   AMPRELEASE,    K_PCT,    0,0, 0,{0} },
 
   /* ---- LFO 1 ---- */
-  { "lfo1_wave",     "LFO1 Wave",     LFO1WAVEFORM,  K_PCT,    0,0, 0,{0},{0} },
-  { "lfo1_rate",     "LFO1 Rate",     LFO1RATE,      K_PCT,    0,0, 0,{0},{0} },
-  { "lfo1_amount",   "LFO1 Amount",   LFO1AMOUNT,    K_PCT,    0,0, 0,{0},{0} },
-  { "lfo1_dest",     "LFO1 Dest",     LFO1DESTINATION,K_ENUM,  0,0, LFO_DESTS,
-        {"None","Filter","Osc1","Osc2","PW","FM","LFO2"}, {1,2,3,4,5,6,7} },
-  { "lfo1_sync",     "LFO1 Sync",     LFO1SYNC,      K_TOGGLE, 0,0, 0,{0},{0} },
-  { "lfo1_keytrig",  "LFO1 KeyTrig",  LFO1KEYTRIGGER,K_TOGGLE, 0,0, 0,{0},{0} },
-  { "lfo1_phase",    "LFO1 Phase",    LFO1PHASE,     K_PCT,    0,0, 0,{0},{0} },
+  { "lfo1_wave",     "LFO1 Wave",     LFO1WAVEFORM,  K_PCT,    0,0, 0,{0} },
+  { "lfo1_rate",     "LFO1 Rate",     LFO1RATE,      K_PCT,    0,0, 0,{0} },
+  { "lfo1_amount",   "LFO1 Amount",   LFO1AMOUNT,    K_PCT,    0,0, 0,{0} },
+  { "lfo1_dest",     "LFO1 Dest",     LFO1DESTINATION,K_ENUM,  0,0, 8,
+        {"None","Filter","Osc1","Osc2","PW","FM","LFO2","Osc1+2"} },
+  { "lfo1_sync",     "LFO1 Sync",     LFO1SYNC,      K_TOGGLE, 0,0, 0,{0} },
+  { "lfo1_keytrig",  "LFO1 KeyTrig",  LFO1KEYTRIGGER,K_TOGGLE, 0,0, 0,{0} },
+  { "lfo1_phase",    "LFO1 Phase",    LFO1PHASE,     K_PCT,    0,0, 0,{0} },
 
   /* ---- LFO 2 ---- */
-  { "lfo2_wave",     "LFO2 Wave",     LFO2WAVEFORM,  K_PCT,    0,0, 0,{0},{0} },
-  { "lfo2_rate",     "LFO2 Rate",     LFO2RATE,      K_PCT,    0,0, 0,{0},{0} },
-  { "lfo2_amount",   "LFO2 Amount",   LFO2AMOUNT,    K_PCT,    0,0, 0,{0},{0} },
-  { "lfo2_dest",     "LFO2 Dest",     LFO2DESTINATION,K_ENUM,  0,0, LFO_DESTS,
-        {"None","Filter","Osc1","Osc2","PW","FM","LFO1"}, {1,2,3,4,5,6,7} },
-  { "lfo2_sync",     "LFO2 Sync",     LFO2SYNC,      K_TOGGLE, 0,0, 0,{0},{0} },
-  { "lfo2_keytrig",  "LFO2 KeyTrig",  LFO2KEYTRIGGER,K_TOGGLE, 0,0, 0,{0},{0} },
-  { "lfo2_phase",    "LFO2 Phase",    LFO2PHASE,     K_PCT,    0,0, 0,{0},{0} },
+  { "lfo2_wave",     "LFO2 Wave",     LFO2WAVEFORM,  K_PCT,    0,0, 0,{0} },
+  { "lfo2_rate",     "LFO2 Rate",     LFO2RATE,      K_PCT,    0,0, 0,{0} },
+  { "lfo2_amount",   "LFO2 Amount",   LFO2AMOUNT,    K_PCT,    0,0, 0,{0} },
+  { "lfo2_dest",     "LFO2 Dest",     LFO2DESTINATION,K_ENUM,  0,0, 8,
+        {"None","Filter","Osc1","Osc2","PW","FM","LFO1","Osc1+2"} },
+  { "lfo2_sync",     "LFO2 Sync",     LFO2SYNC,      K_TOGGLE, 0,0, 0,{0} },
+  { "lfo2_keytrig",  "LFO2 KeyTrig",  LFO2KEYTRIGGER,K_TOGGLE, 0,0, 0,{0} },
+  { "lfo2_phase",    "LFO2 Phase",    LFO2PHASE,     K_PCT,    0,0, 0,{0} },
 
-  /* ---- Free AD envelope (extra modulation) ---- */
-  { "free_a",        "Env3 Attack",   FREEADATTACK,  K_PCT,    0,0, 0,{0},{0} },
-  { "free_d",        "Env3 Decay",    FREEADDECAY,   K_PCT,    0,0, 0,{0},{0} },
-  { "free_amt",      "Env3 Amount",   FREEADAMOUNT,  K_BIPOLAR,0,0, 0,{0},{0} },
-  { "free_dest",     "Env3 Dest",     FREEADDESTINATION,K_ENUM,0,0, FREE_DESTS,
-        {"None","Filter","Osc1&2","Osc2","PW"}, {1,2,3,4,5} },
+  /* ---- Free AD envelope ---- */
+  { "free_a",        "Env3 Attack",   FREEADATTACK,  K_PCT,    0,0, 0,{0} },
+  { "free_d",        "Env3 Decay",    FREEADDECAY,   K_PCT,    0,0, 0,{0} },
+  { "free_amt",      "Env3 Amount",   FREEADAMOUNT,  K_BIPOLAR,0,0, 0,{0} },
+  { "free_dest",     "Env3 Dest",     FREEADDESTINATION,K_ENUM,0,0, 6,
+        {"Off","Filter","Osc1","Osc2","PW","FM"} },
 
   /* ---- Velocity / wheel ---- */
-  { "vel_vol",       "Vel > Vol",     VELOCITYVOLUME, K_PCT,   0,0, 0,{0},{0} },
-  { "vel_env",       "Vel > Env",     VELOCITYCONTOUR,K_PCT,   0,0, 0,{0},{0} },
-  { "vel_cut",       "Vel > Cutoff",  VELOCITYCUTOFF, K_PCT,   0,0, 0,{0},{0} },
-  { "pw_cutoff",     "Wheel > Cutoff",PITCHWHEELCUTOFF,K_PCT,  0,0, 0,{0},{0} },
-  { "pw_pitch",      "Bend Range",    PITCHWHEELPITCH,K_PCT,   0,0, 0,{0},{0} },
+  { "vel_vol",       "Vel > Vol",     VELOCITYVOLUME, K_PCT,   0,0, 0,{0} },
+  { "vel_env",       "Vel > Env",     VELOCITYCONTOUR,K_PCT,   0,0, 0,{0} },
+  { "vel_cut",       "Vel > Cutoff",  VELOCITYCUTOFF, K_PCT,   0,0, 0,{0} },
+  { "pw_cutoff",     "Wheel > Cutoff",PITCHWHEELCUTOFF,K_PCT,  0,0, 0,{0} },
+  { "pw_pitch",      "Bend Range",    PITCHWHEELPITCH,K_PCT,   0,0, 0,{0} },
 
   /* ---- Voicing ---- */
-  { "portamento",    "Portamento",    PORTAMENTO,    K_PCT,    0,0, 0,{0},{0} },
-  { "porta_mode",    "Porta Mode",    PORTAMENTOMODE,K_TOGGLE, 0,0, 0,{0},{0} },
-  { "voices",        "Voices",        VOICES,        K_INT,    1,NM_MAX_POLY, 0,{0},{0} },
+  { "portamento",    "Portamento",    PORTAMENTO,    K_PCT,    0,0, 0,{0} },
+  { "porta_mode",    "Porta Mode",    PORTAMENTOMODE,K_ENUM,   0,0, 3, {"Off","Auto","On"} },
+  { "voices",        "Voices",        VOICES,        K_INT,    1,6, 6,{0} },
 
   /* ---- Chorus / Reverb ---- */
-  { "chorus1",       "Chorus I",      CHORUS1ENABLE, K_TOGGLE, 0,0, 0,{0},{0} },
-  { "chorus2",       "Chorus II",     CHORUS2ENABLE, K_TOGGLE, 0,0, 0,{0},{0} },
-  { "reverb_wet",    "Reverb Wet",    REVERBWET,     K_PCT,    0,0, 0,{0},{0} },
-  { "reverb_decay",  "Reverb Decay",  REVERBDECAY,   K_PCT,    0,0, 0,{0},{0} },
-  { "reverb_pre",    "Reverb PreDly", REVERBPREDELAY,K_PCT,    0,0, 0,{0},{0} },
-  { "reverb_hi",     "Reverb HiCut",  REVERBHIGHCUT, K_PCT,    0,0, 0,{0},{0} },
-  { "reverb_lo",     "Reverb LoCut",  REVERBLOWCUT,  K_PCT,    0,0, 0,{0},{0} },
+  { "chorus1",       "Chorus I",      CHORUS1ENABLE, K_TOGGLE, 0,0, 0,{0} },
+  { "chorus2",       "Chorus II",     CHORUS2ENABLE, K_TOGGLE, 0,0, 0,{0} },
+  { "reverb_wet",    "Reverb Wet",    REVERBWET,     K_PCT,    0,0, 0,{0} },
+  { "reverb_decay",  "Reverb Decay",  REVERBDECAY,   K_PCT,    0,0, 0,{0} },
+  { "reverb_pre",    "Reverb PreDly", REVERBPREDELAY,K_PCT,    0,0, 0,{0} },
+  { "reverb_hi",     "Reverb HiCut",  REVERBHIGHCUT, K_PCT,    0,0, 0,{0} },
+  { "reverb_lo",     "Reverb LoCut",  REVERBLOWCUT,  K_PCT,    0,0, 0,{0} },
+
+  /* ---- Delay ---- */
+  { "delay_wet",     "Delay Wet",     DELAYWET,      K_PCT,    0,0, 0,{0} },
+  { "delay_time",    "Delay Time",    DELAYTIME,     K_PCT,    0,0, 0,{0} },
+  { "delay_sync",    "Delay Sync",    DELAYSYNC,     K_TOGGLE, 0,0, 0,{0} },
+  { "delay_fac_l",   "Delay 2x L",    DELAYFACTORL,  K_TOGGLE, 0,0, 0,{0} },
+  { "delay_fac_r",   "Delay 2x R",    DELAYFACTORR,  K_TOGGLE, 0,0, 0,{0} },
+  { "delay_fb",      "Delay Feedbk",  DELAYFEEDBACK, K_PCT,    0,0, 0,{0} },
+  { "delay_hi",      "Delay HiCut",   DELAYHIGHSHELF,K_PCT,    0,0, 0,{0} },
+  { "delay_lo",      "Delay LoCut",   DELAYLOWSHELF, K_PCT,    0,0, 0,{0} },
 };
 
 static const int NM_PARAM_COUNT = (int)(sizeof(PARAMS) / sizeof(PARAMS[0]));
 
-/* Default patch: a plain saw-through-lowpass so a fresh instance is audible.
- * Values are ENGINE-space (0..1 / small ints), matching TAL programData. */
+/* Default patch (normalized) — a plain saw/LP init so a fresh instance is
+ * audible before preset 0 loads over it. */
 typedef struct { int index; float value; } patch_val_t;
 static const patch_val_t DEFAULT_PATCH[] = {
   { VOLUME, 0.50f },
-  { OSC1VOLUME, 0.80f }, { OSC1WAVEFORM, 0.0f },     // saw
-  { OSC2VOLUME, 0.0f },  { OSC2WAVEFORM, 0.0f },
-  { OSC3VOLUME, 0.0f },
+  { OSC1VOLUME, 0.80f }, { OSC1WAVEFORM, 0.0f },     // saw (combo 1)
+  { OSC2VOLUME, 0.0f },  { OSC2WAVEFORM, 0.0f }, { OSC3VOLUME, 0.0f },
   { OSCMASTERTUNE, 0.5f }, { OSC1TUNE, 0.5f }, { OSC2TUNE, 0.5f },
   { OSC1FINETUNE, 0.5f }, { OSC2FINETUNE, 0.5f }, { DETUNE, 0.20f },
   { OSC1PW, 0.5f },
-  { FILTERTYPE, 1.0f },                               // LP24
-  { CUTOFF, 0.55f }, { RESONANCE, 0.12f }, { KEYFOLLOW, 0.30f },
+  { FILTERTYPE, 0.0f },                               // LP24 (combo 1 of 12)
+  { CUTOFF, 0.60f }, { RESONANCE, 0.12f }, { KEYFOLLOW, 0.30f },
   { FILTERCONTOUR, 0.35f },
   { FILTERATTACK, 0.0f }, { FILTERDECAY, 0.45f }, { FILTERSUSTAIN, 0.30f }, { FILTERRELEASE, 0.30f },
   { AMPATTACK, 0.0f },    { AMPDECAY, 0.50f },   { AMPSUSTAIN, 0.85f }, { AMPRELEASE, 0.28f },
-  { LFO1RATE, 0.30f }, { LFO1AMOUNT, 0.0f }, { LFO1DESTINATION, 1.0f },
-  { LFO2RATE, 0.30f }, { LFO2AMOUNT, 0.0f }, { LFO2DESTINATION, 1.0f },
-  { FREEADDESTINATION, 1.0f },
+  { LFO1RATE, 0.30f }, { LFO1AMOUNT, 0.0f },
+  { LFO2RATE, 0.30f }, { LFO2AMOUNT, 0.0f },
   { PITCHWHEELPITCH, 0.20f },
-  { VOICES, (float)NM_NUM_VOICES },
+  { VOICES, 1.0f },                                   // normalized -> combo 6
 };
 static const int DEFAULT_PATCH_COUNT = (int)(sizeof(DEFAULT_PATCH) / sizeof(DEFAULT_PATCH[0]));
 
@@ -253,11 +244,11 @@ static const int DEFAULT_PATCH_COUNT = (int)(sizeof(DEFAULT_PATCH) / sizeof(DEFA
 typedef struct {
     char        module_dir[256];
     SynthEngine *synth;
-    float       eng[NUMPARAM];   // shadow of engine-space values, by SYNTHPARAMETERS
+    float       eng[NUMPARAM];   // shadow of NORMALIZED values, by SYNTHPARAMETERS
     int         octave_transpose;
     float       tempo_bpm;
     int         editor_page;     // canvas overlay state (persists per instance)
-    int         cur_preset;      // index into NM_FACTORY_BANK, -1 == Init (default patch)
+    int         cur_preset;      // index into NM_FACTORY_BANK, -1 == Init
 } nm_instance_t;
 
 static const param_def_t *find_param(const char *key) {
@@ -266,8 +257,9 @@ static const param_def_t *find_param(const char *key) {
     return NULL;
 }
 
-/* Push one engine-space value into the engine, handling the setters that need
- * cross-param context (tempo, sibling params). Mirrors TalCore::setParameter. */
+/* Push one NORMALIZED value into the engine. Most params pass straight to their
+ * setter (which does its own log/combo scaling); LFO rate/sync need tempo, and
+ * the delay params route through the delay engine. Mirrors TalCore::setParameter. */
 static void apply_engine(nm_instance_t *inst, int idx, float v) {
     SynthEngine *e = inst->synth;
     inst->eng[idx] = v;
@@ -278,6 +270,7 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case RESONANCE:      e->setResonance(v); break;
         case FILTERCONTOUR:  e->setFilterContour(v); break;
         case KEYFOLLOW:      e->setKeyfollow(v); break;
+        case FILTERDRIVE:    e->setFilterDrive(v); break;
         case FILTERATTACK:   e->setFilterAttack(v); break;
         case FILTERDECAY:    e->setFilterDecay(v); break;
         case FILTERSUSTAIN:  e->setFilterSustain(v); break;
@@ -295,10 +288,11 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case OSC2TUNE:       e->setOsc2Tune(v); break;
         case OSC1FINETUNE:   e->setOsc1FineTune(v); break;
         case OSC2FINETUNE:   e->setOsc2FineTune(v); break;
-        case OSCSYNC:        e->setOscSync(v > 0.0f); break;
+        case OSCSYNC:        e->setOscSync(v); break;
         case OSCMASTERTUNE:  e->setMastertune(v); break;
-        case TRANSPOSE:      e->setTranspose(v); break;   // preset-driven (0.5 == 0 semis)
+        case TRANSPOSE:      e->setTranspose(v); break;
         case DETUNE:         e->setDetune(v); break;
+        case VINTAGENOISE:   e->setVintageNoise(v); break;
         case OSC1PW:         e->setOsc1Pw(v); break;
         case OSC1PHASE:      e->setOsc1Phase(v); break;
         case OSC2FM:         e->setOsc1Fm(v); break;   // TAL maps OSC2FM -> setOsc1Fm
@@ -332,87 +326,88 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case VELOCITYCUTOFF:  e->setVelocityCutoff(v); break;
         case PITCHWHEELCUTOFF:e->setPitchwheelCutoff(v); break;
         case PITCHWHEELPITCH: e->setPitchwheelPitch(v); break;
-        case CHORUS1ENABLE:   e->setChorus(v > 0.0f, inst->eng[CHORUS2ENABLE] > 0.0f); break;
-        case CHORUS2ENABLE:   e->setChorus(inst->eng[CHORUS1ENABLE] > 0.0f, v > 0.0f); break;
+        case CHORUS1ENABLE:   e->setChorus(v > 0.5f, inst->eng[CHORUS2ENABLE] > 0.5f); break;
+        case CHORUS2ENABLE:   e->setChorus(inst->eng[CHORUS1ENABLE] > 0.5f, v > 0.5f); break;
         case REVERBWET:       e->setReverbWet(v); break;
         case REVERBDECAY:     e->setReverbDecay(v); break;
         case REVERBPREDELAY:  e->setReverbPreDelay(v); break;
         case REVERBHIGHCUT:   e->setReverbHighCut(v); break;
         case REVERBLOWCUT:    e->setReverbLowCut(v); break;
-        case VOICES: {
-            int nv = (int)(v + 0.5f);
-            if (nv < 1) nv = 1;
-            if (nv > NM_MAX_POLY) nv = NM_MAX_POLY;   // never allocate the phantom voice
-            e->setNumberOfVoices(nv);
-            break;
-        }
+        case DELAYWET:        e->getDelayEngine()->setWet(v); break;
+        case DELAYTIME:       e->getDelayEngine()->setDelay(v); break;
+        case DELAYSYNC:       e->getDelayEngine()->setSync(v > 0.5f); break;
+        case DELAYFACTORL:    e->getDelayEngine()->setFactor2xL(v > 0.5f); break;
+        case DELAYFACTORR:    e->getDelayEngine()->setFactor2xR(v > 0.5f); break;
+        case DELAYHIGHSHELF:  e->getDelayEngine()->setHighCut(v); break;
+        case DELAYLOWSHELF:   e->getDelayEngine()->setLowCut(v); break;
+        case DELAYFEEDBACK:   e->getDelayEngine()->setFeedback(v); break;
+        case VOICES:          e->setNumberOfVoices(v); break;
+        /* EnvelopeEditor params accepted but inert (deferred, stubbed). */
+        case ENVELOPEEDITORDEST1:   e->setEnvelopeEditorDest1(v); break;
+        case ENVELOPEEDITORSPEED:   e->setEnvelopeEditorSpeed(v); break;
+        case ENVELOPEEDITORAMOUNT:  e->setEnvelopeEditorAmount(v); break;
         default: break;
     }
 }
 
-/* Load one factory program: push every engine-space value through apply_engine
- * in enum order. That order already satisfies the cross-dep setters (LFO rates
- * precede their SYNC entries, CHORUS1/2 are adjacent and read inst->eng which
- * is updated as we go); values are raw programData — no display conversion. */
-static void load_preset(nm_instance_t *inst, int idx) {
-    if (idx < 0 || idx >= NM_FACTORY_COUNT) return;
-    inst->cur_preset = idx;
-    /* Release everything first: applying VOICES calls setNumberOfVoices, which
-     * clears VoiceManager::playingNotes WITHOUT note-offing the voices — a note
-     * held across a preset switch would never see its note-off (stuck note),
-     * and poly->mono switches would strand poly voices entirely. reset() is a
-     * graceful release (setNoteOff on all voices), not a hard kill. */
-    inst->synth->setPanic();
-    const nm_factory_preset_t *p = &NM_FACTORY_BANK[idx];
-    for (int i = 1; i < NUMPARAM; i++) {          // skip UNKNOWN(0)
-        if (i == PANIC || i == MIDILEARN) continue;
-        apply_engine(inst, i, p->programData[i]);
-    }
+/* ---- display <-> normalized conversion ---- */
+static int combo_norm_to_idx(float norm, int n) {   // matches calcComboBoxValue-1
+    if (n < 2) return 0;
+    int k = (int)floorf(norm * (n - 1) + 1.5f) - 1;
+    if (k < 0) k = 0;
+    if (k > n - 1) k = n - 1;
+    return k;
+}
+static float combo_idx_to_norm(int idx, int n) {
+    if (n < 2) return 0.0f;
+    if (idx < 0) idx = 0;
+    if (idx > n - 1) idx = n - 1;
+    return (float)idx / (float)(n - 1);
 }
 
-/* ---- display <-> engine conversion ---- */
 static float disp_to_engine(const param_def_t *p, const char *val) {
     switch (p->kind) {
-        case K_PCT:     return (float)atof(val) / 100.0f;
-        case K_BIPOLAR: return (float)atof(val) / 100.0f;            // 0..100 -> 0..1 (50 center)
+        case K_PCT:
+        case K_BIPOLAR: return (float)atof(val) / 100.0f;              // 0..100 -> 0..1
         case K_TOGGLE:  return (atoi(val) != 0) ? 1.0f : 0.0f;
         case K_INT: {
             int iv = atoi(val);
             if (iv < p->imin) iv = p->imin;
             if (iv > p->imax) iv = p->imax;
-            return (float)iv;
+            return combo_idx_to_norm(iv - p->imin, p->n_opts);         // 1..6 -> norm
         }
-        case K_ENUM: {
-            int iv = atoi(val);
-            if (iv < 0) iv = 0;
-            if (iv >= p->n_opts) iv = p->n_opts - 1;
-            return p->enum_vals[iv];
-        }
+        case K_ENUM:    return combo_idx_to_norm(atoi(val), p->n_opts);
     }
     return 0.0f;
 }
 
-static void engine_to_disp(const param_def_t *p, float e, char *buf, int len) {
+static void engine_to_disp(const param_def_t *p, float norm, char *buf, int len) {
     switch (p->kind) {
-        case K_PCT:     snprintf(buf, len, "%d", (int)lroundf(e * 100.0f)); break;
-        case K_BIPOLAR: snprintf(buf, len, "%d", (int)lroundf(e * 100.0f)); break;   // 0..100, 50 center
-        case K_TOGGLE:  snprintf(buf, len, "%d", e > 0.5f ? 1 : 0); break;
-        case K_INT:     snprintf(buf, len, "%d", (int)lroundf(e)); break;
-        case K_ENUM: {
-            int best = 0; float bd = 1e9f;
-            for (int i = 0; i < p->n_opts; i++) {
-                float d = fabsf(e - p->enum_vals[i]);
-                if (d < bd) { bd = d; best = i; }
-            }
-            snprintf(buf, len, "%d", best);
-            break;
-        }
-        default: snprintf(buf, len, "0"); break;
+        case K_PCT:
+        case K_BIPOLAR: snprintf(buf, len, "%d", (int)lroundf(norm * 100.0f)); break;
+        case K_TOGGLE:  snprintf(buf, len, "%d", norm > 0.5f ? 1 : 0); break;
+        case K_INT:     snprintf(buf, len, "%d", p->imin + combo_norm_to_idx(norm, p->n_opts)); break;
+        case K_ENUM:    snprintf(buf, len, "%d", combo_norm_to_idx(norm, p->n_opts)); break;
+        default:        snprintf(buf, len, "0"); break;
+    }
+}
+
+/* Load one factory program (256-entry bank, normalized values). Release first
+ * so a held note across a switch isn't stranded (setNumberOfVoices clears the
+ * playing list without note-offing). */
+static void load_preset(nm_instance_t *inst, int idx) {
+    if (idx < 0 || idx >= NM_FACTORY_COUNT) return;
+    inst->cur_preset = idx;
+    inst->synth->setPanic();
+    const nm_factory_preset_t *p = &NM_FACTORY_BANK[idx];
+    for (int i = 1; i < NUMPARAM; i++) {          // skip UNUSED1(0)
+        if (i == PANIC) continue;
+        apply_engine(inst, i, p->programData[i]);
     }
 }
 
 /* ======================================================================== *
- *  ui_hierarchy + chain_params JSON (static; canvas overlay registered here)
+ *  ui_hierarchy + chain_params JSON
  * ======================================================================== */
 static const char *kUiHierarchy =
 "{\"modes\":null,\"levels\":{"
@@ -429,14 +424,15 @@ static const char *kUiHierarchy =
      "{\"level\":\"lfo2\",\"label\":\"LFO 2\"},"
      "{\"level\":\"env3\",\"label\":\"Env 3 (Free)\"},"
      "{\"level\":\"voice\",\"label\":\"Voicing / Vel\"},"
-     "{\"level\":\"fx\",\"label\":\"Chorus / Reverb\"}"
+     "{\"level\":\"fx\",\"label\":\"Chorus / Reverb\"},"
+     "{\"level\":\"delay\",\"label\":\"Delay\"}"
    "]},"
  "\"osc\":{\"knobs\":[\"osc1_wave\",\"osc2_wave\",\"osc1_vol\",\"osc2_vol\",\"osc3_vol\",\"detune\",\"osc1_pw\",\"ringmod\"],"
    "\"params\":[\"osc1_wave\",\"osc1_vol\",\"osc1_tune\",\"osc1_fine\",\"osc1_pw\",\"osc1_phase\","
      "\"osc2_wave\",\"osc2_vol\",\"osc2_tune\",\"osc2_fine\",\"osc2_phase\",\"osc2_fm\","
-     "\"osc3_vol\",\"osc_sync\",\"ringmod\",\"detune\",\"osc_tune\",\"bitcrush\"]},"
- "\"filter\":{\"knobs\":[\"filter_type\",\"cutoff\",\"resonance\",\"keyfollow\",\"filter_env\",\"highpass\",\"vel_cut\",\"pw_cutoff\"],"
-   "\"params\":[\"filter_type\",\"cutoff\",\"resonance\",\"keyfollow\",\"filter_env\",\"highpass\"]},"
+     "\"osc3_vol\",\"osc_sync\",\"ringmod\",\"detune\",\"osc_tune\",\"bitcrush\",\"vintage\"]},"
+ "\"filter\":{\"knobs\":[\"filter_type\",\"cutoff\",\"resonance\",\"keyfollow\",\"filter_env\",\"filter_drive\",\"highpass\",\"vel_cut\"],"
+   "\"params\":[\"filter_type\",\"cutoff\",\"resonance\",\"keyfollow\",\"filter_env\",\"filter_drive\",\"highpass\"]},"
  "\"fenv\":{\"knobs\":[\"fenv_a\",\"fenv_d\",\"fenv_s\",\"fenv_r\",\"filter_env\",\"vel_env\",\"cutoff\",\"resonance\"],"
    "\"params\":[\"fenv_a\",\"fenv_d\",\"fenv_s\",\"fenv_r\"]},"
  "\"aenv\":{\"knobs\":[\"aenv_a\",\"aenv_d\",\"aenv_s\",\"aenv_r\",\"vel_vol\",\"volume\",\"cutoff\",\"resonance\"],"
@@ -450,10 +446,11 @@ static const char *kUiHierarchy =
  "\"voice\":{\"knobs\":[\"voices\",\"portamento\",\"porta_mode\",\"vel_vol\",\"vel_env\",\"vel_cut\",\"pw_pitch\",\"pw_cutoff\"],"
    "\"params\":[\"voices\",\"portamento\",\"porta_mode\",\"vel_vol\",\"vel_env\",\"vel_cut\",\"pw_pitch\",\"pw_cutoff\"]},"
  "\"fx\":{\"knobs\":[\"chorus1\",\"chorus2\",\"reverb_wet\",\"reverb_decay\",\"reverb_pre\",\"reverb_hi\",\"reverb_lo\",\"volume\"],"
-   "\"params\":[\"chorus1\",\"chorus2\",\"reverb_wet\",\"reverb_decay\",\"reverb_pre\",\"reverb_hi\",\"reverb_lo\"]}"
+   "\"params\":[\"chorus1\",\"chorus2\",\"reverb_wet\",\"reverb_decay\",\"reverb_pre\",\"reverb_hi\",\"reverb_lo\"]},"
+ "\"delay\":{\"knobs\":[\"delay_wet\",\"delay_time\",\"delay_fb\",\"delay_sync\",\"delay_fac_l\",\"delay_fac_r\",\"delay_hi\",\"delay_lo\"],"
+   "\"params\":[\"delay_wet\",\"delay_time\",\"delay_fb\",\"delay_sync\",\"delay_fac_l\",\"delay_fac_r\",\"delay_hi\",\"delay_lo\"]}"
 "}}";
 
-/* chain_params: emitted dynamically from PARAMS[] + the canvas editor entry. */
 static int build_chain_params(char *buf, int len) {
     int n = 0;
     n += snprintf(buf + n, len - n, "[");
@@ -513,11 +510,13 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->cur_preset = -1;
 
     inst->synth = new SynthEngine((float)MOVE_SAMPLE_RATE);
-    inst->synth->setNumberOfVoices(NM_NUM_VOICES);
+    inst->synth->setNumberOfVoices(1.0f);   // normalized -> combo 6
 
     for (int i = 0; i < NUMPARAM; i++) inst->eng[i] = 0.0f;
-    for (int i = 0; i < DEFAULT_PATCH_COUNT; i++)
-        apply_engine(inst, DEFAULT_PATCH[i].index, DEFAULT_PATCH[i].value);
+    for (int i = 0; i < DEFAULT_PATCH_COUNT; i++) {
+        int idx = DEFAULT_PATCH[i].index;
+        if (idx >= 0 && idx < NUMPARAM) apply_engine(inst, idx, DEFAULT_PATCH[i].value);
+    }
     load_preset(inst, 0);   /* factory startup patch; host preset recall overrides */
     return inst;
 }
@@ -538,26 +537,26 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     uint8_t d2 = (len > 2) ? msg[2] : 0;
 
     switch (status) {
-        case 0x90: { // note on
+        case 0x90: {
             int note = d1 + inst->octave_transpose * 12;
             if (note < 0) note = 0; if (note > 127) note = 127;
             if (d2 > 0) inst->synth->setNoteOn(note, d2 / 127.0f);
             else        inst->synth->setNoteOff(note);
             break;
         }
-        case 0x80: { // note off
+        case 0x80: {
             int note = d1 + inst->octave_transpose * 12;
             if (note < 0) note = 0; if (note > 127) note = 127;
             inst->synth->setNoteOff(note);
             break;
         }
-        case 0xE0: { // pitch bend -> normalized -1..1
-            if (len < 3) break;  // torn 2-byte bend would read as full-down
+        case 0xE0: {
+            if (len < 3) break;
             int bend = ((d2 << 7) | d1) - 8192;
             inst->synth->setPitchwheelAmount(bend / 8192.0f);
             break;
         }
-        case 0xB0: { // CCs: 120/123 all-notes/sound-off -> panic
+        case 0xB0: {
             if (d1 == 120 || d1 == 123) inst->synth->setPanic();
             break;
         }
@@ -623,13 +622,14 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         if (out_interleaved_lr) memset(out_interleaved_lr, 0, frames * 4);
         return;
     }
-    /* Refresh tempo for host-synced LFOs; re-apply rates only when BPM moves. */
+    /* Refresh tempo for host-synced LFOs + delay; re-apply only when BPM moves. */
     if (g_host && g_host->get_bpm) {
         float bpm = g_host->get_bpm();
         if (bpm > 0.0f && fabsf(bpm - inst->tempo_bpm) > 0.01f) {
             inst->tempo_bpm = bpm;
             inst->synth->setLfo1Rate(inst->eng[LFO1RATE], bpm);
             inst->synth->setLfo2Rate(inst->eng[LFO2RATE], bpm);
+            inst->synth->setDelayBpm(bpm);
         }
     }
     for (int i = 0; i < frames; i++) {

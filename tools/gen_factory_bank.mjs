@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /*
- * gen_factory_bank.mjs — bake TAL Noisemaker's 128 factory programs into a C
+ * gen_factory_bank.mjs — bake TAL Noisemaker's factory programs into a C
  * header the wrapper #includes.
  *
- * Reads the vendored plain-XML bank (tools/factory/tal_factory_bank.xml, each
- * <program> carrying 68 attrs whose names are the lowercased SYNTHPARAMETERS
- * enum, values already engine-space) and the engine enum (src/dsp/Engine/
- * Params.h), and emits src/dsp/factory_bank.h:
+ * Reads the vendored plain-XML bank (tools/factory/tal_factory_bank.xml,
+ * decoded from the vendor's ProgramChunk.h via decode_program_chunk.mjs; each
+ * <program> carries one attr per lowercased SYNTHPARAMETERS enum name, values
+ * already engine-space) and the engine enum (src/dsp/Engine/Params.h), and
+ * emits src/dsp/factory_bank.h:
  *
- *     static const nm_factory_preset_t NM_FACTORY_BANK[128] = {
+ *     static const nm_factory_preset_t NM_FACTORY_BANK[NM_FACTORY_COUNT] = {
  *         { "name", { <NUMPARAM engine-space floats, indexed by enum> } }, ...
  *     };
  *
@@ -80,8 +81,8 @@ while ((pm = progRe.exec(xml)) !== null) {
   presets.push({ name, data });
 }
 
-if (presets.length !== 128)
-  console.warn(`[gen] warning: expected 128 programs, got ${presets.length}`);
+if (presets.length === 0)
+  console.warn(`[gen] warning: no <program> elements found in ${XML}`);
 if (unmapped.size)
   console.warn(`[gen] warning: unmapped attrs (ignored): ${[...unmapped].join(', ')}`);
 
