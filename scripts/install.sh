@@ -21,8 +21,16 @@ fi
 
 echo "=== Installing Noisemaker Module -> $MOVE_HOST ==="
 ssh "$MOVE_HOST" "mkdir -p $DEST"
-scp -r "dist/$ID/"* "$MOVE_HOST:$DEST/"
-ssh "$MOVE_HOST" "chmod -R a+rw $DEST"
+# Copy each file to a temp name then atomic mv -f. Scp'ing DIRECTLY over a live
+# dlopen'd dsp.so overwrites the mapped inode in place and wedges the host; the
+# temp+mv keeps the running module on its old inode and lands the new file
+# cleanly (next instantiation picks it up). Same reason the manager deploy does
+# this. After deploy, restart via the workspace scripts/restart_move.sh.
+for f in "dist/$ID/"*; do
+    fn="$(basename "$f")"
+    scp -q "$f" "$MOVE_HOST:$DEST/$fn.new"
+    ssh "$MOVE_HOST" "mv -f '$DEST/$fn.new' '$DEST/$fn' && chmod a+rw '$DEST/$fn'"
+done
 
 echo ""
 echo "=== Install Complete ==="
