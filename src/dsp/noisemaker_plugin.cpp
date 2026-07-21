@@ -82,7 +82,7 @@ static const host_api_v1_t *g_host = NULL;
 
 enum ParamKind {
     K_PCT,      // engine 0..1   <-> display 0..100
-    K_BIPOLAR,  // engine 0..1   <-> display -100..100 (0.5 == center)
+    K_BIPOLAR,  // engine 0..1   <-> display 0..100 (50 == center; canvaskit bip)
     K_TOGGLE,   // engine 0/1    <-> display 0/1
     K_INT,      // engine int    <-> display int (passed straight through)
     K_ENUM      // engine value from enum_vals[idx] <-> display index 0..n-1
@@ -123,10 +123,13 @@ static const param_def_t PARAMS[] = {
   { "highpass",      "High Pass",     HIGHPASS,      K_PCT,    0,0, 0,{0},{0} },
 
   /* ---- Oscillators ---- */
+  /* enum_vals sit at each waveform ZONE CENTER (getOsc*Waveform thresholds:
+   * osc1 splits 0.5/1.0; osc2 at thirds) so nearest-match readback of an
+   * arbitrary preset value lands in the right zone. */
   { "osc1_wave",     "Osc1 Wave",     OSC1WAVEFORM,  K_ENUM,   0,0, OSC1_WAVES,
-        {"Saw","Pulse","Noise"}, {0.0f, 0.60f, 1.0f} },
+        {"Saw","Pulse","Noise"}, {0.25f, 0.75f, 1.0f} },
   { "osc2_wave",     "Osc2 Wave",     OSC2WAVEFORM,  K_ENUM,   0,0, OSC2_WAVES,
-        {"Saw","Pulse","Tri","Sine"}, {0.0f, 0.34f, 0.67f, 1.0f} },
+        {"Saw","Pulse","Tri","Sine"}, {0.166f, 0.5f, 0.83f, 1.0f} },
   { "osc1_vol",      "Osc1 Level",    OSC1VOLUME,    K_PCT,    0,0, 0,{0},{0} },
   { "osc2_vol",      "Osc2 Level",    OSC2VOLUME,    K_PCT,    0,0, 0,{0},{0} },
   { "osc3_vol",      "Sub Level",     OSC3VOLUME,    K_PCT,    0,0, 0,{0},{0} },
@@ -361,7 +364,7 @@ static void load_preset(nm_instance_t *inst, int idx) {
 static float disp_to_engine(const param_def_t *p, const char *val) {
     switch (p->kind) {
         case K_PCT:     return (float)atof(val) / 100.0f;
-        case K_BIPOLAR: return (float)atof(val) / 200.0f + 0.5f;      // -100..100 -> 0..1
+        case K_BIPOLAR: return (float)atof(val) / 100.0f;            // 0..100 -> 0..1 (50 center)
         case K_TOGGLE:  return (atoi(val) != 0) ? 1.0f : 0.0f;
         case K_INT: {
             int iv = atoi(val);
@@ -382,7 +385,7 @@ static float disp_to_engine(const param_def_t *p, const char *val) {
 static void engine_to_disp(const param_def_t *p, float e, char *buf, int len) {
     switch (p->kind) {
         case K_PCT:     snprintf(buf, len, "%d", (int)lroundf(e * 100.0f)); break;
-        case K_BIPOLAR: snprintf(buf, len, "%d", (int)lroundf((e - 0.5f) * 200.0f)); break;
+        case K_BIPOLAR: snprintf(buf, len, "%d", (int)lroundf(e * 100.0f)); break;   // 0..100, 50 center
         case K_TOGGLE:  snprintf(buf, len, "%d", e > 0.5f ? 1 : 0); break;
         case K_INT:     snprintf(buf, len, "%d", (int)lroundf(e)); break;
         case K_ENUM: {
@@ -404,9 +407,10 @@ static void engine_to_disp(const param_def_t *p, float e, char *buf, int len) {
 static const char *kUiHierarchy =
 "{\"modes\":null,\"levels\":{"
  "\"root\":{\"label\":\"Noisemaker\","
+   "\"list_param\":\"preset\",\"count_param\":\"preset_count\",\"name_param\":\"preset_name\","
    "\"knobs\":[\"cutoff\",\"resonance\",\"filter_env\",\"aenv_a\",\"aenv_d\",\"aenv_s\",\"aenv_r\",\"volume\"],"
    "\"params\":["
-     "{\"key\":\"noisemaker_editor\",\"label\":\"Editor\"},"
+     "{\"key\":\"editor\",\"label\":\"Editor\"},"
      "{\"level\":\"osc\",\"label\":\"Oscillators\"},"
      "{\"level\":\"filter\",\"label\":\"Filter\"},"
      "{\"level\":\"fenv\",\"label\":\"Filter Env\"},"
@@ -444,8 +448,8 @@ static int build_chain_params(char *buf, int len) {
     int n = 0;
     n += snprintf(buf + n, len - n, "[");
     n += snprintf(buf + n, len - n,
-        "{\"key\":\"noisemaker_editor\",\"name\":\"Editor\",\"type\":\"canvas\","
-        "\"canvas_script\":\"canvas.js#noisemaker_editor\",\"show_footer\":false,\"show_value\":false}");
+        "{\"key\":\"editor\",\"name\":\"Bank Editor\",\"type\":\"canvas\","
+        "\"canvas_script\":\"canvas.js#bank_editor\",\"show_footer\":false,\"show_value\":false}");
     for (int i = 0; i < NM_PARAM_COUNT && n < len - 256; i++) {
         const param_def_t *p = &PARAMS[i];
         n += snprintf(buf + n, len - n, ",");
@@ -457,7 +461,7 @@ static int build_chain_params(char *buf, int len) {
                 break;
             case K_BIPOLAR:
                 n += snprintf(buf + n, len - n,
-                    "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"int\",\"min\":-100,\"max\":100,\"step\":1}",
+                    "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"int\",\"min\":0,\"max\":100,\"step\":1}",
                     p->key, p->name);
                 break;
             case K_TOGGLE:
@@ -557,7 +561,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 
     if (strcmp(key, "all_notes_off") == 0) { inst->synth->setPanic(); return; }
     if (strcmp(key, "octave_transpose") == 0) { inst->octave_transpose = atoi(val); return; }
-    if (strcmp(key, "noisemaker_editor") == 0) { inst->editor_page = atoi(val); return; }
+    if (strcmp(key, "editor") == 0) { inst->editor_page = atoi(val); return; }
     if (strcmp(key, "preset") == 0) {
         int idx = atoi(val);
         if (idx >= 0 && idx < NM_FACTORY_COUNT && idx != inst->cur_preset)
@@ -588,7 +592,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%d", inst->cur_preset < 0 ? 0 : inst->cur_preset);
     if (strcmp(key, "octave_transpose") == 0)
         return snprintf(buf, buf_len, "%d", inst->octave_transpose);
-    if (strcmp(key, "noisemaker_editor") == 0)
+    if (strcmp(key, "editor") == 0)
         return snprintf(buf, buf_len, "%d", inst->editor_page);
 
     const param_def_t *p = find_param(key);
