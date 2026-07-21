@@ -359,6 +359,8 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case ENVELOPEEDITORDEST1:   e->setEnvelopeEditorDest1(v); break;
         case ENVELOPEEDITORSPEED:   e->setEnvelopeEditorSpeed(v); break;
         case ENVELOPEEDITORAMOUNT:  e->setEnvelopeEditorAmount(v); break;
+        case ENVELOPEONESHOT:       e->setEnvelopeEditorOneShot(v > 0.5f); break;
+        case ENVELOPEFIXTEMPO:      e->setEnvelopeEditorFixTempo(v > 0.5f); break;
         default: break;
     }
 }
