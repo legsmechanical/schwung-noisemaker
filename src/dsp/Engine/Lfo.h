@@ -29,13 +29,13 @@ public:
 
   /**  @param samplerate the samplerate in Hz */
   Lfo(float samplerate);
-  virtual ~Lfo() {}
+  ~Lfo();
 
   /** increments the phase and outputs the new LFO value.
       @return the new LFO value between [-1;+1] */ 
   float tick(int waveform);
 
-  void resetPhase();
+  void resetPhase(float phase);
 
   /** change the current rate
       @param rate new rate in Hz */

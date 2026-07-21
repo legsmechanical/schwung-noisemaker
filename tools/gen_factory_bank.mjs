@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /*
- * gen_factory_bank.mjs — bake TAL Noisemaker's 128 factory programs into a C
+ * gen_factory_bank.mjs — bake TAL Noisemaker's factory programs into a C
  * header the wrapper #includes.
  *
- * Reads the vendored plain-XML bank (tools/factory/tal_factory_bank.xml, each
- * <program> carrying 68 attrs whose names are the lowercased SYNTHPARAMETERS
- * enum, values already engine-space) and the engine enum (src/dsp/Engine/
- * Params.h), and emits src/dsp/factory_bank.h:
+ * Reads the vendored plain-XML bank (tools/factory/tal_factory_bank.xml,
+ * decoded from the vendor's ProgramChunk.h via decode_program_chunk.mjs; each
+ * <program> carries one attr per lowercased SYNTHPARAMETERS enum name, values
+ * already engine-space) and the engine enum (src/dsp/Engine/Params.h), and
+ * emits src/dsp/factory_bank.h:
  *
- *     static const nm_factory_preset_t NM_FACTORY_BANK[128] = {
+ *     static const nm_factory_preset_t NM_FACTORY_BANK[NM_FACTORY_COUNT] = {
  *         { "name", { <NUMPARAM engine-space floats, indexed by enum> } }, ...
  *     };
  *
@@ -77,11 +78,27 @@ while ((pm = progRe.exec(xml)) !== null) {
     if (idx === undefined) { unmapped.add(k); continue; }
     data[idx] = parseFloat(v);
   }
+
+  /* FILTERTYPE version skew: these v1.6 presets encode filtertype in a 10-item
+   * combo scheme (value = k/9, k = 0..9), but the vendored engine now has 12
+   * filter types (getNumComboBoxItems == 12) — Moog + Moog2 were appended after
+   * these presets were saved. The first 10 filters are identical, so preserve
+   * the intended filter: decode the authored index k = round(v*9) and re-encode
+   * for the 12-item scheme as k/11, so calcComboBoxValue(v,12) picks the same
+   * filter the preset meant (verified: KB Big Synth 0.444 -> HP24, matching the
+   * old bank). Every OTHER combo param's item count is unchanged (osc waves 3/5,
+   * LFO dests 8, free dest 6, porta 3, voices 6), so only filtertype is remapped. */
+  const ftIdx = enumMap['FILTERTYPE'];
+  if (ftIdx !== undefined) {
+    const k = Math.round(data[ftIdx] * 9);   // authored combo index (10-item)
+    data[ftIdx] = k / 11;                     // 12-item normalized, same filter
+  }
+
   presets.push({ name, data });
 }
 
-if (presets.length !== 128)
-  console.warn(`[gen] warning: expected 128 programs, got ${presets.length}`);
+if (presets.length === 0)
+  console.warn(`[gen] warning: no <program> elements found in ${XML}`);
 if (unmapped.size)
   console.warn(`[gen] warning: unmapped attrs (ignored): ${[...unmapped].join(', ')}`);
 

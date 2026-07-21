@@ -37,11 +37,13 @@ int main(int argc, char **argv) {
         char v[16]; snprintf(v, sizeof(v), "%d", preset);
         api->set_param(inst, "preset", v);
     } else {
-        /* Explicit worst case: full FX chain + max voices. */
+        /* Explicit worst case: full FX chain (chorus+reverb+delay) + max voices. */
         api->set_param(inst, "chorus1", "1");
         api->set_param(inst, "chorus2", "1");
         api->set_param(inst, "reverb_wet", "80");
         api->set_param(inst, "reverb_decay", "80");
+        api->set_param(inst, "delay_wet", "70");
+        api->set_param(inst, "delay_fb", "60");
         api->set_param(inst, "osc2_vol", "80");   // 2nd osc active
         api->set_param(inst, "osc3_vol", "60");   // sub active
     }

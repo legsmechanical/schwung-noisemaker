@@ -67,6 +67,11 @@ public:
         reset();
 	}
 
+    ~FilterHp24db()
+    {
+        delete oscNoise;
+    }
+
 public:
     void reset()
     {

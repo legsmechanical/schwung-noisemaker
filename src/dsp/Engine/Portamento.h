@@ -38,6 +38,10 @@ public:
 		slideValue = 42;
 	}
 
+    ~Portamento()
+    {
+    }
+
 	inline float tick(float destValue, float portamentoValue, bool portamentoOn) 
 	{
 		if (portamentoOn)

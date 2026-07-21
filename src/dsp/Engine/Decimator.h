@@ -6,7 +6,7 @@ private:
 	float returnValues[4];
 
 public:
-	Upsample::Upsample()
+	Upsample()
 	{
 		b0= b1= b2= b3= 0.0f;
 	}
@@ -57,7 +57,7 @@ private:
 
 
 public:
-	Decimator5::Decimator5():h0(346/692.0f),h1(208/692.0f),h3(-44/692.0f),h5(9/692.0f)
+	Decimator5():h0(346/692.0f),h1(208/692.0f),h3(-44/692.0f),h5(9/692.0f)
 	{
 		R1=R2=R3=R4=R5=0.0f;
 	}
@@ -81,7 +81,7 @@ private:
 	float R1,R2,R3,R4,R5,R6,R7;
 	const float h0,h1,h3,h5,h7;
 public:
-	Decimator7::Decimator7():h0(802/1604.0f),h1(490/1604.0f),h3(-116/1604.0f),h5(33/1604.0f),h7(-6/1604.0f)
+	Decimator7():h0(802/1604.0f),h1(490/1604.0f),h3(-116/1604.0f),h5(33/1604.0f),h7(-6/1604.0f)
 	{
 		R1=R2=R3=R4=R5=R6=R7=0.0f;
 	}
@@ -116,7 +116,7 @@ private:
 	float R10;
 
 public:
-	Decimator9::Decimator9():h0(8192/16384.0f),h1(5042/16384.0f),h3(-1277/16384.0f),h5(429/16384.0f),h7(-116/16384.0f),h9(18/16384.0f)
+	Decimator9():h0(8192/16384.0f),h1(5042/16384.0f),h3(-1277/16384.0f),h5(429/16384.0f),h7(-116/16384.0f),h9(18/16384.0f)
 	{
         Initialize();
 	}

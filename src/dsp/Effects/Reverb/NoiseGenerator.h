@@ -39,7 +39,7 @@ public:
 
 	float invertedRandomMax;
 
-	NoiseGenerator(int sampleRate) 
+	NoiseGenerator(float sampleRate) 
 	{
 		// No sample rate conversion here
 		filterFactor = 5000.0f;
@@ -49,9 +49,9 @@ public:
 		actualValueFiltered = 0.0f;
 		deltaValue = 0.0f;
 
-		getNextRandomPeriod(1.0f);
+		getNextRandomPeriod(0);
 
-        randSeed = 1;
+        randSeed = rand();
 	}
 
 	// returns a random value [0..1] 

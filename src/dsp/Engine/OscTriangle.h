@@ -36,8 +36,6 @@ public:
 	const float oversampling;
 	const int n;
 
-	float *integratedBlep;
-
 	float *buffer;
 	float *bufferSync;
 	int bufferPos;
@@ -83,6 +81,8 @@ public:
 		//minBlep = blepData->getBlep();
 		sincBlep = blepData->getSinc();
 		minBlep = blepData->getBlep();
+        delete blepData;
+
 		resetOsc(0.0f);
 
 		pi= 3.1415926535897932384626433832795f;
@@ -98,7 +98,7 @@ public:
 	~OscTriangle() 
 	{
 		delete[] buffer;
-		delete[] minBlep;
+        delete[] bufferSync;
 	}
 
 	void resetOsc(float phase) 

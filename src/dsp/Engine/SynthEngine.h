@@ -35,8 +35,12 @@
 #include "VelocityHandler.h"
 #include "HighPass.h"
 #include "StereoPan.h"
+#include "OscNoise.h"
 #include "../Effects/Chorus/ChorusEngine.h"
+#include "../Effects/Delay/DelayEngine.h"
 #include "../Effects/Reverb/ReverbEngine.h"
+#include "../EnvelopeEditor/EnvelopeEditor.h"
+#include "../EnvelopeEditor/EnvelopeEditorHandler.h"
 
 class SynthEngine 
 {
@@ -57,17 +61,20 @@ private:
     HighPass *highPass;
     StereoPan *stereoPan;
 
+    DelayEngine *delayEngine;
     ChorusEngine *chorusEngine;
     ReverbEngine *reverbEngine;
 
-	AudioUtils audioUtils;
-public:
-	float *param;
+    EnvelopeEditor *envelopeEditor;
+    EnvelopeEditorHandler *envelopeEditorHandler;
 
+    OscNoise *denormalNoise;
+
+	AudioUtils audioUtils;
+
+public:
 	SynthEngine(float sampleRate) 
 	{
-		Params *params= new Params();
-		this->param= params->parameters;
 		initialize(sampleRate);
 	}
 
@@ -77,83 +84,99 @@ public:
 		delete voiceManager;
         delete chorusEngine;
         delete reverbEngine;
+        delete envelopeEditor;
+        delete envelopeEditorHandler;
+        delete highPass;
+        delete stereoPan;
+        delete denormalNoise;
+        delete lfoHandler1;
+        delete lfoHandler2;
+        delete pitchwheelHandler;
+        delete velocityHandler;
+        delete delayEngine;
 	}
 
 private:
 	void initialize(float sampleRate)
 	{
+        if (sampleRate <= 0)
+        {
+            sampleRate = 44100.0f;
+        }
+
         this->sampleRate = sampleRate;
 		this->cutoff = 1.0f;
 		this->volume = 1.0f;
 
 		cutoffFiltered = new ParamChangeUtil(sampleRate, 1000.0f);
 
+        this->envelopeEditor = new EnvelopeEditor(sampleRate);
+
 		lfoHandler1 = new LfoHandler1(sampleRate);
 		lfoHandler2 = new LfoHandler2(sampleRate);
+
         pitchwheelHandler = new PitchwheelHandler(sampleRate);
         velocityHandler = new VelocityHandler(sampleRate);
+        envelopeEditorHandler = new EnvelopeEditorHandler(this->envelopeEditor);
 
         highPass = new HighPass();
-        this->stereoPan = new StereoPan();
+        this->stereoPan = new StereoPan(lfoHandler2);
 
+        this->denormalNoise = new OscNoise(sampleRate);
+
+        this->delayEngine = new DelayEngine(sampleRate);
         this->chorusEngine = new ChorusEngine(sampleRate);
         this->reverbEngine = new ReverbEngine(sampleRate);
-		voiceManager = new VoiceManager(sampleRate, lfoHandler1, lfoHandler2, velocityHandler, pitchwheelHandler);
+		voiceManager = new VoiceManager(sampleRate, lfoHandler1, lfoHandler2, velocityHandler, pitchwheelHandler, envelopeEditorHandler);
 	}
 
-	Osc::Waveform getOsc1Waveform(float value)
+	Osc::Waveform getOsc1Waveform(int value)
 	{
 		Osc::Waveform waveform;
 
-		float valueSize = 1.0f / 2.0f - 0.001f;
-		if (value < valueSize)
+		switch (value)
 		{
-			waveform = Osc::SAW;
-		}
-		else if (value < valueSize * 2.0f)
-		{
-			waveform = Osc::PULSE;
-		}
-		else
-		{
-			waveform = Osc::NOISE;
+        case 1: waveform = Osc::SAW; break;
+        case 2: waveform = Osc::PULSE; break;
+        case 3: waveform = Osc::NOISE; break;
+        default: waveform = Osc::SAW;
 		}
 		return waveform;
 	}
 
-	Osc::Waveform getOsc2Waveform(float value)
+	Osc::Waveform getOsc2Waveform(int value)
 	{
 		Osc::Waveform waveform;
 
-		float valueSize = 1.0f / 3.0f - 0.001f;
-		if (value < valueSize)
+		switch (value)
 		{
-			waveform = Osc::SAW;
-		}
-		else if (value < valueSize * 2.0f)
-		{
-			waveform = Osc::PULSE;
-		}
-		else if (value < valueSize * 3.0f)
-		{
-			waveform = Osc::TRIANGLE;
-		}
-		else
-		{
-			waveform = Osc::SIN;
+        case 1: waveform = Osc::SAW; break;
+        case 2: waveform = Osc::PULSE; break;
+        case 3: waveform = Osc::TRIANGLE; break;
+        case 4: waveform = Osc::SIN; break;
+        case 5: waveform = Osc::NOISE; break;
+        default: waveform = Osc::SAW;
 		}
 		return waveform;
 	}
 
 public:
-	void setSampleRate (float sampleRate)
+    EnvelopeEditor* getEnvelopeEditor()
+    {
+        return this->envelopeEditor;
+    }
+
+    /* SCHWUNG PORT: setPoints(Array<SplinePoint*>) removed — JUCE-typed and only
+     * used by the (deferred) drawable envelope-editor UI. See EnvelopeEditor/. */
+
+	void setSampleRate(float sampleRate)
 	{
 		initialize(sampleRate);
 	}
 
-	void setNumberOfVoices(int numberOfVoices)
+	void setNumberOfVoices(float numberOfVoices)
 	{
-		this->voiceManager->setNumberOfVoices(numberOfVoices);
+		this->voiceManager->setNumberOfVoices(audioUtils.calcComboBoxValue(numberOfVoices, VOICES));
 	}
 
 	void setNoteOn(int note, float velocity)
@@ -175,7 +198,7 @@ public:
 	{
 		value = audioUtils.getLogScaledVolume(value, 1.0f);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
  			voices[i]->setOsc1Volume(value);
 		}
@@ -185,7 +208,7 @@ public:
 	{
 		value = audioUtils.getLogScaledVolume(value, 1.0f);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc2Volume(value);
 		}
@@ -195,7 +218,7 @@ public:
 	{
 		value = audioUtils.getLogScaledVolume(value, 1.0f);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc3Volume(value);
 		}
@@ -203,9 +226,9 @@ public:
 
 	void setOsc1Waveform(float value)
 	{
-		Osc::Waveform waveform = getOsc1Waveform(value);
+		Osc::Waveform waveform = getOsc1Waveform(audioUtils.calcComboBoxValue(value, OSC1WAVEFORM));
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc1Waveform(waveform);
 		}
@@ -213,9 +236,9 @@ public:
 
 	void setOsc2Waveform(float value)
 	{
-		Osc::Waveform waveform = getOsc2Waveform(value);
+		Osc::Waveform waveform = getOsc2Waveform(audioUtils.calcComboBoxValue(value, OSC2WAVEFORM));
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc2Waveform(waveform);
 		}
@@ -225,7 +248,7 @@ public:
 	{
 		value = audioUtils.getOscTuneValue(value);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc1Tune(value);
 		}
@@ -235,7 +258,7 @@ public:
 	{
 		value = audioUtils.getOscTuneValue(value);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc2Tune(value);
 		}
@@ -245,7 +268,7 @@ public:
 	{
 		value = audioUtils.getOscFineTuneValue(value);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc1FineTune(value);
 		}
@@ -255,7 +278,7 @@ public:
 	{
 		value = audioUtils.getOscFineTuneValue(value);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc2FineTune(value);
 		}
@@ -265,7 +288,7 @@ public:
 	void setOscSync(bool value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOscSync(value);
 		}
@@ -285,7 +308,7 @@ public:
 	void setResonance(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setResonance(value);
 		}
@@ -294,7 +317,7 @@ public:
 	void setKeyfollow(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setKeyfollow(value);
 		}
@@ -304,7 +327,7 @@ public:
 	{
 		value = audioUtils.getLogScaledValueCentered(value);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setFilterContour(value);
 		}
@@ -313,7 +336,7 @@ public:
 	void setFilterAttack(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setFilterAttack(value);
 		}
@@ -322,7 +345,7 @@ public:
 	void setFilterDecay(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setFilterDecay(value);
 		}
@@ -332,7 +355,7 @@ public:
 	{
         value = audioUtils.getLogScaledVolume(value, 1.0f);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setFilterSustain(value);
 		}
@@ -341,7 +364,7 @@ public:
 	void setFilterRelease(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setFilterRelease(value);
 		}
@@ -350,7 +373,7 @@ public:
 	void setAmpAttack(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setAmpAttack(value);
 		}
@@ -359,7 +382,7 @@ public:
 	void setAmpDecay(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setAmpDecay(value);
 		}
@@ -368,7 +391,7 @@ public:
 	void setAmpSustain(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setAmpSustain(value);
 		}
@@ -377,7 +400,7 @@ public:
 	void setAmpRelease(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setAmpRelease(value);
 		}
@@ -385,17 +408,18 @@ public:
 
 	void setPortamentoMode(float value)
 	{
+        int intValue = audioUtils.calcComboBoxValue(value, PORTAMENTOMODE);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
-			voices[i]->setPortamentoMode(value);
+			voices[i]->setPortamentoMode(intValue);
 		}
 	}
 
 	void setPortamento(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setPortamento(value);
 		}
@@ -404,7 +428,7 @@ public:
 	void setOsc1Pw(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc1Pw(value);
 		}
@@ -413,7 +437,7 @@ public:
 	void setOsc1Phase(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc1Phase(value);
 		}
@@ -422,7 +446,7 @@ public:
 	void setOsc1Fm(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc1Fm(value);
 		}
@@ -431,7 +455,7 @@ public:
 	void setOsc2Phase(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOsc2Phase(value);
 		}
@@ -460,7 +484,7 @@ public:
 	void setFreeAdAttack(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setFreeAdAttack(value);
 		}
@@ -469,7 +493,7 @@ public:
 	void setFreeAdDecay(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setFreeAdDecay(value);
 		}
@@ -477,9 +501,9 @@ public:
 
 	void setFreeAdAmount(float value)
 	{
-		value = audioUtils.getLogScaledValueCentered(value);
+        value = audioUtils.getLogScaledValueCentered(value);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setFreeAdAmount(value);
 		}
@@ -487,17 +511,18 @@ public:
 
 	void setFreeAdDestination(float value)
 	{
+        int intValue = audioUtils.calcComboBoxValue(value, FREEADDESTINATION);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
-			voices[i]->setFreeAdDestination((int)value);
+			voices[i]->setFreeAdDestination(intValue);
 		}
 	}
 
 	void setLfo1Sync(float value, float rate, float bpm)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setLfo1Sync(value, rate, bpm);
 		}
@@ -506,7 +531,7 @@ public:
 	void setLfo1KeyTrigger(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setLfo1KeyTrigger(value);
 		}
@@ -515,7 +540,7 @@ public:
 	void setLfo2Sync(float value, float rate, float bpm)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setLfo2Sync(value, rate, bpm);
 		}
@@ -524,7 +549,7 @@ public:
 	void setLfo2KeyTrigger(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setLfo2KeyTrigger(value);
 		}
@@ -584,7 +609,7 @@ public:
 	{
         value = audioUtils.getLogScaledLinearValueCentered(value);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setMastertune(value);
 		}
@@ -592,18 +617,18 @@ public:
 
 	void setTranspose(float value)
 	{
-        value = audioUtils.getTranspose(value);
+        int intValue = audioUtils.getTranspose(value);
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
-			voices[i]->setTranspose(value);
+			voices[i]->setTranspose(intValue);
 		}
 	}
 
     void setRingmodulation(float value)
     {
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setRingmodulation(value);
 		}
@@ -616,7 +641,8 @@ public:
 
 	void setLfo1Destination(float value)
 	{
-		switch ((int)value)
+		int intValue = audioUtils.calcComboBoxValue(value, LFO1DESTINATION);
+		switch (intValue)
 		{
 		case 1:
 			lfoHandler1->setDestination(LfoHandler1::NOTHING);
@@ -639,12 +665,16 @@ public:
 		case 7:
             lfoHandler1->setDestination(LfoHandler1::LFO2RATE);
 			break;
+		case 8:
+            lfoHandler1->setDestination(LfoHandler1::OSC12PITCH);
+			break;
 		}
 	}
 
 	void setLfo2Destination(float value)
 	{
-		switch ((int)value)
+		int intValue = audioUtils.calcComboBoxValue(value, LFO2DESTINATION);
+		switch (intValue)
 		{
 		case 1:
 			lfoHandler2->setDestination(LfoHandler2::NOTHING);
@@ -667,6 +697,9 @@ public:
 		case 7:
 			lfoHandler2->setDestination(LfoHandler2::LFO1RATE);
 			break;
+		case 8:
+            lfoHandler2->setDestination(LfoHandler2::OSC12PITCH);
+			break;
 		}
 	}
 
@@ -677,21 +710,82 @@ public:
 
 	void setDetune(float value)
 	{
+        value *= value;
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setDetune(value);
 		}
 	}
 
-	void setFiltertype(float value)
+	void setVintageNoise(float value)
 	{
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
-			voices[i]->setFiltertype(value);
+			voices[i]->setVintageNoise(value);
 		}
 	}
+
+	void setFiltertype(float value)
+	{
+        int intValue = audioUtils.calcComboBoxValue(value, FILTERTYPE);
+		SynthVoice** voices = voiceManager->getAllVoices();
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
+		{
+			voices[i]->setFiltertype(intValue);
+		}
+	}
+
+    /* SCHWUNG PORT: setEnvelopeEditorBpm(AudioPlayHead::CurrentPositionInfo)
+     * removed — JUCE-typed host-transport overload. The float overload below
+     * is used instead (we pass host BPM directly). */
+
+    void setDelayBpm(float bpm)
+    {
+        this->delayEngine->setBpm(bpm);
+    }
+
+    void setEnvelopeEditorBpm(float bpm)
+    {
+        this->envelopeEditor->setTimeInformation(bpm);
+    }
+
+    void setEnvelopeEditorDest1(float value)
+    {
+        int intValue = audioUtils.calcComboBoxValue(value, ENVELOPEEDITORDEST1);
+        this->envelopeEditorHandler->setDestination1(intValue);
+    }
+
+    void setEnvelopeEditorSpeed(float value)
+    {
+        int intValue = audioUtils.calcComboBoxValue(value, ENVELOPEEDITORSPEED);
+        this->envelopeEditor->setSpeedFactor(intValue);
+    }
+
+    void setEnvelopeEditorAmount(float value)
+    {
+        this->envelopeEditorHandler->setAmount(value);
+    }
+
+    void setEnvelopeEditorOneShot(bool value)
+    {
+        this->envelopeEditorHandler->setOneShot(value);
+    }
+
+    void setEnvelopeEditorFixTempo(bool value)
+    {
+        this->envelopeEditorHandler->setFixTempo(value);
+    }
+
+    void setFilterDrive(float value)
+    {
+		SynthVoice** voices = voiceManager->getAllVoices();
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
+		{
+			voices[i]->setFilterDrive(value);
+		}
+    }
 
     void setChorus(bool isChorus1Enabled, bool isChorus2Enabled)
     {
@@ -726,35 +820,36 @@ public:
     void setOscBitcrusher(float value)
     {
 		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
 			voices[i]->setOscBitcrusher(value);
 		}
     }
 
+    DelayEngine* getDelayEngine()
+    {
+        return delayEngine;
+    }
+
     void reset()
     {
-		SynthVoice** voices = voiceManager->getAllVoices();
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
-		{
-			voices[i]->reset();
-		}
+        voiceManager->reset();
     }
 
     void triggerLfoToHost(const float bmp, const float samplePosition)
     {
         if (lfoHandler1->isSync || lfoHandler2->isSync)
 		{
-			float samplesPerBeat = 60.0f / bmp * sampleRate;
-            
             if (lfoHandler1->isSync)
             {
+			    float samplesPerBeat = 60.0f / bmp * sampleRate;
 			    float lfoInc = lfoHandler1->getLfoInc() / 256.0f;
 			    float phase = lfoInc * samplesPerBeat * samplePosition;
 			    lfoHandler1->setHostPhase(phase - floorf(phase));
             }
             if (lfoHandler2->isSync)
             {
+			    float samplesPerBeat = 60.0f / bmp * sampleRate;
 			    float lfoInc = lfoHandler2->getLfoInc() / 256.0f;
 			    float phase = lfoInc * samplesPerBeat * samplePosition;
 			    lfoHandler2->setHostPhase(phase - floorf(phase));
@@ -764,18 +859,23 @@ public:
 
 	void process(float *sampleL, float *sampleR) 
 	{
-		*sampleL = 0.0f;
-		*sampleR = 0.0f;
+        float denormalNoise = this->denormalNoise->getNextSample() * 0.00000001f;
+		*sampleL = denormalNoise;
+		*sampleR = denormalNoise;
 
 		// Parameter lp filtering
 		float cutoff = cutoffFiltered->tick(this->cutoff);
 
 		// Process voices
 		bool playingNotes = false;
-		for (int i = 0; i < voiceManager->MAX_VOICES - 1; i++)
+        SynthVoice** voices = voiceManager->getAllVoices();
+		for (int i = 0; i < voiceManager->MAX_VOICES; i++)
 		{
-			playingNotes |= voiceManager->getAllVoices()[i]->process(sampleL, sampleR, cutoff);
+			playingNotes |= voices[i]->process(sampleL, sampleR, cutoff);
 		}
+
+        highPass->tick(sampleL);
+        *sampleR = *sampleL;
 
 		if (playingNotes)
 		{
@@ -786,21 +886,17 @@ public:
 		    lfoHandler2->process();
 
             // FIXME: loose stereo information here of a voice
-            highPass->tick(sampleL);
             *sampleL *= this->lfoHandler2->getVolume();
             *sampleR = *sampleL;
 
-            // FIXME: rewrite this
-            if (lfoHandler2->getDestination() == LfoHandler2::PAN)
-            {
-                this->stereoPan->setModulationAmount(lfoHandler2->getAmount());
-                this->stereoPan->process(sampleL, sampleR, lfoHandler2->getPan());
-            }
-
-			*sampleL *= volume;
-			*sampleR *= volume;
+            this->stereoPan->process(sampleL, sampleR);
 		}
 
+		*sampleL *= volume;
+		*sampleR *= volume;
+
+        // stereo master fx
+        this->delayEngine->process(sampleL, sampleR);
         this->chorusEngine->process(sampleL, sampleR);
         this->reverbEngine->process(sampleL, sampleR);
 	}

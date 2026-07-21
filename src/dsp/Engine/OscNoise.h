@@ -1,7 +1,7 @@
 #ifndef OscNoise_H
 #define OscNoise_H
 
-#include "Math.h"
+#include "math.h"
 
 /*
 	==============================================================================
@@ -32,28 +32,47 @@ class OscNoise
 {
 public:
     int randSeed;
+    float currentValueFiltered;
+    float valueUnfiltered;
 
     OscNoise(float sampleRate) 
     {
-        resetOsc();
+        this->resetOsc();
     }
 
     void resetOsc() 
     {
-        randSeed = 1;
+        this->randSeed = 1;
+        this->currentValueFiltered = 0.0f;
+        this->valueUnfiltered = 0.0f;
     }
 
     inline float getNextSample() 
     {
-        randSeed *= 16807;
+        this->randSeed *= 16807;
         //return (float)(randSeed &  0x7FFFFFFF) * 4.6566129e-010f; // 0..1
-        return (float)randSeed * 4.6566129e-010f;
+        return (float)this->randSeed * 4.6566129e-010f;
     }
 
 	inline float getNextSamplePositive() 
 	{
-        randSeed *= 16807;
-        return (float)(randSeed &  0x7FFFFFFF) * 4.6566129e-010f;
+        this->randSeed *= 16807;
+        return (float)(this->randSeed &  0x7FFFFFFF) * 4.6566129e-010f;
+	}
+
+	inline float getNextSampleVintage() 
+	{
+        this->randSeed *= 16807;
+        float oldValue = this->valueUnfiltered;
+        this->valueUnfiltered  = (float)this->randSeed * 4.6566129e-010f;
+
+        if (fabs(this->valueUnfiltered) < 0.95f)
+        {
+            this->valueUnfiltered = oldValue * 0.5f;
+        }
+
+        currentValueFiltered = (this->valueUnfiltered + currentValueFiltered * 3.0f) / 4.0f;
+        return currentValueFiltered;
 	}
 };
 #endif

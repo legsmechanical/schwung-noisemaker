@@ -67,6 +67,11 @@ public:
         reset();
 	}
 
+    ~FilterN24db()
+    {
+        delete oscNoise;
+    }
+
 public:
     void reset()
     {
