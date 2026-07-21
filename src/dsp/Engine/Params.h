@@ -26,8 +26,8 @@
 
 enum SYNTHPARAMETERS
 {
-	// Controllable values [0.0..1.0
-	UNKNOWN= 0,
+	// Controllable values [0.0..1.0]
+	UNUSED1= 0,
 	VOLUME,
 
     FILTERTYPE,
@@ -114,27 +114,38 @@ enum SYNTHPARAMETERS
 
     HIGHPASS,
     DETUNE,
+    VINTAGENOISE,
 
-	PANIC,
-	MIDILEARN,
+    PANIC,
+    UNUSED2,
+
+    ENVELOPEEDITORDEST1,
+    ENVELOPEEDITORSPEED,
+    ENVELOPEEDITORAMOUNT,
+    ENVELOPEONESHOT,
+    ENVELOPEFIXTEMPO,
+    ENVELOPERESET,
+
+    TAB1OPEN,
+    TAB2OPEN,
+    TAB3OPEN,
+    TAB4OPEN,
+
+    FILTERDRIVE,
+
+    DELAYWET,
+    DELAYTIME,
+    DELAYSYNC,
+    DELAYFACTORL,
+    DELAYFACTORR,
+    DELAYHIGHSHELF,
+    DELAYLOWSHELF,
+    DELAYFEEDBACK,
+
+    PRESETLOAD,
+    PRESETSAVE,
 
 	// Number of controllable synth paramenters
-	NUMPARAM,
-	NUMPROGRAMS = 128,
-};
-
-class Params
-{
-public:
-	float *parameters;
-
-	Params()  {
-		parameters= new float[NUMPARAM];
-
-		// Zero program values
-		for(int j=0; j<NUMPARAM; j++) {
-			parameters[j]= 0.0f;
-		}
-	}
+	NUMPARAM
 };
 #endif

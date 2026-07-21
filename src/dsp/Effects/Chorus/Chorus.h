@@ -26,7 +26,7 @@
 
 #include "Lfo.h"
 #include "OnePoleLP.h"
-#include "Math.h"
+#include "math.h"
 
 class Chorus 
 {
@@ -55,8 +55,6 @@ public:
 	// lfo 
 	float lfoPhase, lfoStepSize, lfoSign;
 
-	float vsa;   // Very small amount (Denormal Fix)
-
 	Chorus(float sampleRate, float phase, float rate, float delayTime)
 	{
 		this->rate= rate;
@@ -73,7 +71,7 @@ public:
 
 		//compute required buffer size for desired d0elay and allocate for it
 		//add extra point to aid in interpolation later
-		delayLineLength= ((int)floorf(delayTime*sampleRate*0.001f) + 1 +2000);
+		delayLineLength= ((int)floorf(delayTime*sampleRate*0.001f) * 2);
 		delayLineStart= new float[delayLineLength];
 
 		//set up pointers for delay line
@@ -89,17 +87,16 @@ public:
 		//set read pointer to end of delayline. Setting it to the end
 		//ensures the interpolation below works correctly to produce
 		//the first non-zero sample.
-		writePtr= delayLineStart + delayLineLength -1;
-		delayLineOutput= 0.0f;
-		lp= new OnePoleLP();
-
-		vsa= (1.0f/4294967295.0f);   // Very small amount (Denormal Fix)
+		writePtr = delayLineStart + delayLineLength -1;
+		delayLineOutput = 0.0f;
+		lp = new OnePoleLP();
 	}
 
     ~Chorus()
     {
-        delete delayLineStart;
+        delete[] delayLineStart;
         delete lp;
+        delete lfo;
     }
 
 	float process(float *sample) 

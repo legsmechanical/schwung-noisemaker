@@ -26,7 +26,7 @@
 
 #include "AdsrHandler.h"
 #include "Adsr.h"
-#include "Math.h"
+#include "math.h"
 
 class AdsrHandler
 {
@@ -107,7 +107,7 @@ public:
 
 	void process(bool isNoteOn)
 	{
-		this->adsr->tick(isNoteOn, true);
+		this->adsr->tick(isNoteOn);
 		value = this->adsr->getValueFasterAttack();
 	}
 

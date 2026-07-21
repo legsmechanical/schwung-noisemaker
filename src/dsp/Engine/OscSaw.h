@@ -55,6 +55,8 @@ public:
 		buffer= new float[n];
 		BlepData *blepData= new BlepData();
 		minBlep= blepData->getBlep();
+        delete blepData;
+
 		resetOsc(0.0f);
 
 		pi= 3.1415926535897932384626433832795f;
@@ -64,7 +66,6 @@ public:
 	~OscSaw() 
 	{
 		delete[] buffer;
-		delete[] minBlep;
 	}
 
 	void resetOsc(float phase) 
@@ -98,6 +99,7 @@ public:
 			mixInBlep(resetFrac/tmp, x - fracMaster);
 			x = fracMaster;
 		}
+
 		if (x >= 1.0f) 
 		{
 			x -= 1.0f;

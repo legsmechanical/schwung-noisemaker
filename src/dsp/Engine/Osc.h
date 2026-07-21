@@ -93,6 +93,11 @@ public:
 
     ~Osc() 
     {
+        delete oscSaw;
+        delete oscPulse;
+        delete oscTriangle;
+        delete oscSin;
+        delete oscNoise;
     }
 
     void resetOsc()

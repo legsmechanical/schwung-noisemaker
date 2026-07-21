@@ -67,6 +67,11 @@ public:
         reset();
 	}
 
+    ~FilterLp12db()
+    {
+        delete oscNoise;
+    }
+
 public:
     void reset()
     {

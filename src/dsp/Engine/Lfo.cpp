@@ -10,12 +10,12 @@ Implementation file for LFO.hpp
 #include <cmath>
 #include "Lfo.h"
 
-Lfo::Lfo(float samplerate) : samplerate(samplerate), phase(0), inc(0) {
-	setWaveform(0);   
-	setWaveform(1);   
-	setWaveform(2);   
-	setWaveform(3);   
-	setWaveform(4);   
+Lfo::Lfo(float samplerate_) : phase(0), inc(0), samplerate(samplerate_) {
+	setWaveform(0);
+	setWaveform(1);
+	setWaveform(2);
+	setWaveform(3);
+	setWaveform(4);
 	setRate(1.0f); //1Hz
 
 	noiseOsc= new OscNoise(samplerate);
@@ -24,52 +24,75 @@ Lfo::Lfo(float samplerate) : samplerate(samplerate), phase(0), inc(0) {
 	resultSmooth= 0.0f;
 }
 
+Lfo::~Lfo()
+{
+    delete noiseOsc;
+}
+
 // static const float k1Div24lowerBits =1.0f/16777216.0f; //(float)(1<<24);
 
 float Lfo::tick(int waveform)
 {
 	freqWrap= false;
-	if (phase>255.0f) {
-		phase-= 255.0f;
+
+	if (phase > 255.0f)
+    {
+		phase -= 255.0f;
 		freqWrap= true;
 	}
-	i= (int)floorf(phase);
-	frac= phase-i;
+
+	i = (int)floorf(phase);
+	frac = phase-i;
 
 	// increment the phase for the next tick
-	phase+= inc;
+	phase += inc;
 
 	if (waveform == 0)
-		result = tableSin[i]*(1.0f-frac) + tableSin[i+1]*frac; // linear interpolation
+    {
+		result = tableSin[i]*(1.0f-frac) + tableSin[i+1]*frac;
+    }
 	else if (waveform == 1)
-		result = tableTri[i]*(1.0f-frac) + tableTri[i+1]*frac; // linear interpolation
+    {
+		result = tableTri[i]*(1.0f-frac) + tableTri[i+1]*frac;
+    }
 	else if (waveform == 2)
-		result = tableSaw[i]*(1.0f-frac) + tableSaw[i+1]*frac; // linear interpolation
+    {
+		result = tableSaw[i]*(1.0f-frac) + tableSaw[i+1]*frac;
+    }
 	else if (waveform == 3)
-		result = tableRec[i]*(1.0f-frac) + tableRec[i+1]*frac; // linear interpolation
-	else if (waveform == 4) {
+    {
+		result = tableRec[i]*(1.0f-frac) + tableRec[i+1]*frac;
+    }
+	else if (waveform == 4)
+    {
 		// Random
-		if (freqWrap) {
+		if (freqWrap)
+        {
 			randomValue = ((float)rand() / (float)RAND_MAX - 0.5f) * 2.0f;
 		}
+
 		result = randomValue;
-	} else {
+	}
+    else
+    {
 		result = noiseOsc->getNextSample();
 	}
-	resultSmooth= (resultSmooth*19+result)*0.05f;
+
+	resultSmooth = (resultSmooth * 19 + result) * 0.05f;
 	return resultSmooth;
 }
 
-void Lfo::resetPhase()
+void Lfo::resetPhase(float phase)
 {
-	phase= 0.0f;
-	randomValue=  ((float)rand() / (float)RAND_MAX - 0.5f) * 2.0f;
+	this->phase = phase * 255.0f;
+
+	randomValue = ((float)rand() / (float)RAND_MAX - 0.5f) * 2.0f;
 }
 
 void Lfo::setRate(float rate)
 {
 	// The rate in Hz is converted to a phase increment with the following formula
-	inc =  256.0f*rate/samplerate;
+	inc =  256.0f*rate / samplerate;
 }
 
 void Lfo::setWaveform(int index)
@@ -137,5 +160,5 @@ void Lfo::setWaveform(int index)
 		{
 			break;
 		}
-	} 
+	}
 }

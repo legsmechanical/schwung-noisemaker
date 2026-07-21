@@ -25,6 +25,7 @@
 #define LfoHandler2_H
 
 #include "LfoHandler.h"
+#include "LfoHandler1.h"
 #include "Lfo.h"
 
 class LfoHandler2 : public LfoHandler
@@ -39,6 +40,7 @@ public:
 		PAN,
 		VOLUME,
         LFO1RATE,
+        OSC12PITCH,
 	};
 
 private:
@@ -75,7 +77,7 @@ public:
 
 	inline float getOsc1Pitch()
 	{
-		if (destination == OSC1PITCH)
+		if (destination == OSC1PITCH || destination == OSC12PITCH)
 		{
 			return value * 48.0f * amount;
 		}
@@ -84,7 +86,7 @@ public:
 
 	inline float getOsc2Pitch()
 	{
-		if (destination == OSC2PITCH)
+		if (destination == OSC2PITCH || destination == OSC12PITCH)
 		{
 			return value * 48.0f  * amount;
 		}

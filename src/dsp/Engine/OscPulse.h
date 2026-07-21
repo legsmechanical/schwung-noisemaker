@@ -58,6 +58,8 @@ public:
 		buffer= new float[n];
 		BlepData *blepData= new BlepData();
 		minBlep= blepData->getBlep();
+        delete blepData;
+
 		resetOsc(0.0f);
 
 		pi= 3.1415926535897932384626433832795f;
@@ -69,7 +71,6 @@ public:
 	~OscPulse() 
 	{
 		delete[] buffer;
-		delete[] minBlep;
 	}
 
 	void resetOsc(float phase) 

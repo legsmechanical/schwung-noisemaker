@@ -67,6 +67,11 @@ public:
 		reset();
 	}
 
+    ~FilterLp24db()
+    {
+        delete oscNoise;
+    }
+
 public:
     void reset()
     {
@@ -99,13 +104,13 @@ public:
  
 			// Frequency & amplitude correction
 			kfcr = 1.8730f*(kfc*kfc*kfc) + 0.4955f*(kfc*kfc) - 0.6490f*kfc + 1.4f;
-			kacr = 1.0f + 1.8f * cutoffIn;
+			kacr = 1.05f + 1.4f * cutoffIn;
  
 			tmp = - 2.0f * pi * kfcr * kfc; // Filter Tuning
 			k2vg = (1.0f-(1.0f+tmp+tmp*tmp*0.5f+tmp*tmp*tmp*0.16666667f+tmp*tmp*tmp*tmp*0.0416666667f+tmp*tmp*tmp*tmp*tmp*0.00833333333f));
 		}
 
-        float rnd1 = 0.001f * oscNoise->getNextSamplePositive() * (1.0f -cutoffIn);
+        float rnd1 = 0.001f * oscNoise->getNextSamplePositive() * (1.0f - cutoffIn);
 
         k2vgNoisy = k2vg + rnd1 * cutoffIn;
 
@@ -138,7 +143,7 @@ public:
 			amf *= 0.99f;
 		}
 
-        *input = amf * (resonanceCorrPost + cutoffIn * resonance * 3.5f);
+        *input = amf * (resonanceCorrPost + cutoffIn * resonance * 2.5f);
 	}
 
 	inline float tanhApp(const float x) 

@@ -16,7 +16,7 @@
 
 	You should have received a copy of the GPL along with this
 	program. If not, go to http://www.gnu.org/licenses/gpl.html
-	or write to the Free Software Foundation, Inc.,  
+	or write to the Free Software Foundation, Inc.,
 	51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 	==============================================================================
  */
@@ -25,6 +25,7 @@
 #define LfoHandler1_H
 
 #include "LfoHandler.h"
+#include "LfoHandler2.h"
 #include "Lfo.h"
 
 class LfoHandler1 : public LfoHandler
@@ -39,6 +40,7 @@ public:
 		PW,
 		FM,
         LFO2RATE,
+        OSC12PITCH,
 	};
 
 private:
@@ -48,10 +50,6 @@ public:
 	LfoHandler1(float sampleRate) : LfoHandler(sampleRate)
 	{
 		destination = FILTER;
-	}
-
-	~LfoHandler1()
-	{
 	}
 
 	void setDestination(const Destination destination)
@@ -70,7 +68,7 @@ public:
 
 	inline float getOsc1Pitch()
 	{
-		if (destination == OSC1PITCH)
+		if (destination == OSC1PITCH || destination == OSC12PITCH)
 		{
 			return value * 48.0f * amount;
 		}
@@ -79,7 +77,7 @@ public:
 
 	inline float getOsc2Pitch()
 	{
-		if (destination == OSC2PITCH)
+		if (destination == OSC2PITCH || destination == OSC12PITCH)
 		{
 			return value * 48.0f * amount;
 		}
@@ -113,6 +111,5 @@ public:
 		}
 		return 0.0f;
 	}
-
 };
 #endif

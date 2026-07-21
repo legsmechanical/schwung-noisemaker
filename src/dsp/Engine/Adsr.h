@@ -41,12 +41,16 @@ private:
 
 	int state;
 	float actualValue;
+    float returnValue;
+
+    float realeaseDeclickerValue;
 
 public:
 	Adsr(float sampleRate)
 	{
 		state = 0;
 		actualValue = 0.0f;
+        returnValue = 0.0f;
 
 		sampleRateFactor = 0.004f * 44100.0f / sampleRate;
 
@@ -58,6 +62,8 @@ public:
 		sustainReal = 1.0f;
 		decayReal = 0.0f;
 		attackReal = 0.0f;
+
+        realeaseDeclickerValue = 1.0f;
 	}
 
 private:
@@ -103,12 +109,12 @@ public:
 		this->release = this->scaleValue(value) * 8.0f;
 	}
 
-	inline float tick(bool noteOn, bool isAttackExp) 
+	inline float tick(bool noteOn) 
 	{
-        float returnValue = 0.0f;
-		if (!noteOn && actualValue > 0.0f)
+		if (!noteOn && actualValue > 0.0f && state != 3)
 		{
 			state = 3;
+            realeaseDeclickerValue = 1.0f;
 		}
 		if (!noteOn && actualValue <= 0.0f)
 		{
@@ -117,27 +123,15 @@ public:
 		switch (state)
 		{
 		case 0:
-            if (isAttackExp)
-            {
-			    actualValue += attack * (actualValue + sampleRateFactor);
-            }
-            else
-            {
-                 actualValue += attack * sampleRateFactor * 200.0f * (1.04f + this->attackReal * 0.5f - actualValue);
-            }
+            actualValue += attack * sampleRateFactor * 200.0f * (1.04f + this->attackReal * 0.5f - actualValue);
+
 			if (actualValue > 1.0f)
 			{
 				actualValue = 1.0f; 
 				state = 1;
 			}
-            if (isAttackExp)
-            {
-                returnValue = actualValue * actualValue * actualValue * actualValue * actualValue;
-            }
-            else
-            {
-                returnValue = actualValue;
-            }
+
+            returnValue = actualValue;
             break;
 		case 1:
             actualValue -= decay * (actualValue + sampleRateFactor);
@@ -155,7 +149,14 @@ public:
             returnValue = sustainReal;
             break;
 		case 3:
-			actualValue -= release * (actualValue + sampleRateFactor);
+            realeaseDeclickerValue -= sampleRateFactor;
+            
+            if (realeaseDeclickerValue <= 0.0f)
+            {
+                realeaseDeclickerValue = 0.0f;
+            }
+
+			actualValue -= release * ((actualValue + sampleRateFactor) * (1.0f - realeaseDeclickerValue));
 			if (actualValue < 0.0f)
 			{
 				actualValue = 0.0f;
@@ -186,7 +187,7 @@ public:
 		{
 			return 1.0f;
 		}
-		return actualValue;
+		return returnValue;
 	}
 
 	void resetAll()

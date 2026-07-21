@@ -25,33 +25,32 @@
 #define __StereoPan_h
 
 #include "AudioUtils.h"
+#include "LfoHandler2.h"
 
 class StereoPan 
 {
 public:
-    float modulationAmount;
-
     AudioUtils audioUtils;
+    LfoHandler2 *lfoHandler;
 
-    StereoPan() 
+    StereoPan(LfoHandler2 *lfoHandler) 
     {
-        this->modulationAmount = 1.0f;
+        this->lfoHandler = lfoHandler;
     }
 
-    inline void setModulationAmount(float value)
+    inline float getModulationAmount()
     {
-        this->modulationAmount = value;
+        return this->lfoHandler->getAmount();
     }
 
-    inline void process(float *sampleL, float *sampleR, float lfoValue) 
+    inline void process(float *sampleL, float *sampleR)
     {
-        if (this->modulationAmount != 0.0f)
+        if (lfoHandler->getDestination() == LfoHandler2::PAN)
         {
-            this->modulationAmount = fabs(this->modulationAmount);
-            // There are better ways of making a panning (-3dB)
-            lfoValue = 0.5f * (lfoValue + 1.0f);
-            *sampleL *= 1.0f - lfoValue * this->modulationAmount;
-            *sampleR *= 1.0f - (1.0f - lfoValue) * this->modulationAmount;
+            float pan = 0.5f * (this->lfoHandler->getPan() + 1.0f);
+            float amount = fabs(this->getModulationAmount());
+            *sampleL *= 1.0f - pan * amount;
+            *sampleR *= 1.0f - (1.0f - pan) * amount;
         }
     }
 };

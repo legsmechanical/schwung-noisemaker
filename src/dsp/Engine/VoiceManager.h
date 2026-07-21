@@ -37,23 +37,24 @@ private:
 	vector<int> monoNoteStack;
 
 public:
-	const static int MAX_VOICES = 6;   // upstream-verbatim (renders MAX_VOICES-1 = 5)
+	const static int MAX_VOICES = 6;
 
 	VoiceManager(
         float sampleRate, 
         LfoHandler1 *lfoHandler1, 
         LfoHandler2 *lfoHandler2, 
         VelocityHandler *velocityHandler, 
-        PitchwheelHandler *pitchwheelHandler)
+        PitchwheelHandler *pitchwheelHandler,
+        EnvelopeEditorHandler *envelopeEditorHandler)
 	{
 		// Initialize voices
 		voices = new SynthVoice*[MAX_VOICES];
 		for (int i = 0; i < MAX_VOICES; i++)
 		{
-			voices[i] = new SynthVoice(sampleRate, lfoHandler1, lfoHandler2, velocityHandler, pitchwheelHandler);
+			voices[i] = new SynthVoice(sampleRate, lfoHandler1, lfoHandler2, velocityHandler, pitchwheelHandler, envelopeEditorHandler);
 		}
 
-		numberOfVoices = 6;
+		numberOfVoices = MAX_VOICES;
 
 		playingNotes.clear();
 		monoNoteStack.clear();
@@ -61,15 +62,20 @@ public:
 
 	~VoiceManager() 
 	{
-		delete voices;
+        for (int i = 0; i < MAX_VOICES; i++) delete voices[i];
+		delete[] voices;
+
+        playingNotes.clear();
+        monoNoteStack.clear();
 	}
 
 	void reset()
 	{
- 		for (int i = 0; i < this->MAX_VOICES - 1; i++)
+ 		for (int i = 0; i < this->MAX_VOICES; i++)
 		{
 			voices[i]->setNoteOff(0);
 		}
+
 		playingNotes.clear();
 		monoNoteStack.clear();
 	}
@@ -187,51 +193,45 @@ public:
 	}
 
 private:
-	/* SCHWUNG PORT FIX: mark `v` as most-recently-used at the FRONT of
-	 * playingNotes, removing any stale duplicate of it first, so the list
-	 * stays a clean LRU (each voice appears at most once, newest first).
-	 * The upstream getNewVoice inserted on every allocation WITHOUT dedup and
-	 * NEVER reordered on steal, so (a) a still-releasing voice that got reused
-	 * was inserted twice -> duplicate refs corrupted the ordering, and (b) the
-	 * steal branch always grabbed the same back() voice -> one voice was
-	 * hammered by every over-limit note, gliding (portamento modes 2/3) and
-	 * re-randomizing its detune on each hit = audible warble under fast,
-	 * many-voice playing. A real LRU makes stealing rotate across all voices. */
-	void trackNewest(SynthVoice* v)
-	{
-		for (vector<SynthVoice*>::iterator it = playingNotes.begin(); it != playingNotes.end(); ++it)
-		{
-			if (*it == v) { playingNotes.erase(it); break; }
-		}
-		playingNotes.insert(playingNotes.begin(), v);
-	}
-
 	SynthVoice* getNewVoice(int note)
 	{
-		// Reuse the voice already playing this note (and bump it to newest).
-		for (vector<SynthVoice*>::iterator it = playingNotes.begin(); it != playingNotes.end(); ++it)
-		{
-			if ((*it)->noteNumber == note) { SynthVoice* v = *it; trackNewest(v); return v; }
+		// Try to return same note
+		vector<SynthVoice*>::iterator it= playingNotes.begin();
+		while (it != playingNotes.end()) 
+		{	
+			SynthVoice* synthVoice = *it;
+			if (synthVoice->noteNumber == note) 
+			{
+				return synthVoice;
+			}
+			++it;
 		}
 
-		// A fully silent voice (not sounding, not in release).
+		// Try to get free note
 		for (int i = 0; i < this->numberOfVoices; i++)
 		{
-			if (!voices[i]->isNotePlaying()) { trackNewest(voices[i]); return voices[i]; }
+			SynthVoice* synthVoice = voices[i];
+			if (!synthVoice->isNotePlaying())
+			{
+				playingNotes.insert(playingNotes.begin(), synthVoice);
+				return synthVoice;
+			}
 		}
 
-		// A released voice still ringing out its tail.
+		// Try to get free note
 		for (int i = 0; i < this->numberOfVoices; i++)
 		{
-			if (!voices[i]->getIsNoteOn()) { trackNewest(voices[i]); return voices[i]; }
+			SynthVoice* synthVoice = voices[i];
+			if (!synthVoice->getIsNoteOn())
+			{
+				playingNotes.insert(playingNotes.begin(), synthVoice);
+				return synthVoice;
+			}
 		}
 
-		// All voices actively held: steal the least-recently-used one and
-		// rotate it to newest so the NEXT steal takes a different voice.
-		if (playingNotes.empty()) { trackNewest(voices[0]); return voices[0]; }
-		SynthVoice* oldest = playingNotes.back();
-		trackNewest(oldest);
-		return oldest;
+		// Force to get oldest note
+		SynthVoice* synthVoice = playingNotes.at(playingNotes.size() - 1);
+		return synthVoice;
 	}
 };
 #endif 

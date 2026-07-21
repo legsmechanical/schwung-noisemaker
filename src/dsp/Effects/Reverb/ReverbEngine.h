@@ -24,7 +24,7 @@
 #if !defined(__ReverbEngine_h)
 #define __ReverbEngine_h
 
-#include "Reverb.h"
+#include "TalReverb.h"
 #include "AudioUtils.h"
 #include "Params.h"
 #include "NoiseGenerator.h"
@@ -32,9 +32,7 @@
 class ReverbEngine 
 {
 public:
-	float *param;
-	Reverb* reverb;
-
+	TalReverb* reverb;
 	NoiseGenerator *noiseGenerator;
 
 	float dry;
@@ -45,15 +43,12 @@ public:
 
 	ReverbEngine(float sampleRate) 
 	{
-		Params *params= new Params();
-		this->param= params->parameters;
 		initialize(sampleRate);
 	}
 
 	~ReverbEngine()
 	{
 		delete reverb;
-
 		delete noiseGenerator;
 	}
 
@@ -104,7 +99,7 @@ public:
 
 	void initialize(float sampleRate)
 	{
-		reverb = new Reverb((int)sampleRate);
+		reverb = new TalReverb(sampleRate);
 		noiseGenerator = new NoiseGenerator(sampleRate);
 
 		dry = 1.0f;

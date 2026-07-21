@@ -29,6 +29,8 @@
 #include "LfoHandler2.h"
 #include "AdsrHandler.h"
 #include "AudioUtils.h"
+#include "../EnvelopeEditor/EnvelopeEditorVoiceHandler.h"
+#include "../EnvelopeEditor/EnvelopeEditorHandler.h"
 
 class Vco
 {
@@ -40,6 +42,9 @@ private:
 	LfoHandler1 *lfoHandler1;
 	LfoHandler2 *lfoHandler2;
 	AdsrHandler *freeAdsrHandler;
+
+    EnvelopeEditorHandler *envelopeEditorHandler;
+    EnvelopeEditorVoiceHandler *envelopeEditorVoiceHandler;
 
 	float oldNoteValue;
 	float currentFrequency;
@@ -60,11 +65,19 @@ private:
 	AudioUtils audioUtils;
 
 public:
-	Vco(float sampleRate, LfoHandler1 *lfoHandler1, LfoHandler2 *lfoHandler2, AdsrHandler *freeAdsrHandler)
+	Vco(float sampleRate, 
+        LfoHandler1 *lfoHandler1, 
+        LfoHandler2 *lfoHandler2, 
+        AdsrHandler *freeAdsrHandler,
+        EnvelopeEditorHandler *envelopeEditorHandler,
+        EnvelopeEditorVoiceHandler *envelopeEditorVoiceHandler
+        )
 	{
 		this->lfoHandler1 = lfoHandler1;
 		this->lfoHandler2 = lfoHandler2;
 		this->freeAdsrHandler = freeAdsrHandler;
+        this->envelopeEditorHandler = envelopeEditorHandler;
+        this->envelopeEditorVoiceHandler = envelopeEditorVoiceHandler;
 
 		oldNoteValue = 0.0f;
 		currentFrequency = 440.0f;
@@ -90,6 +103,9 @@ public:
 
 	~Vco() 
 	{
+        delete osc1;
+        delete osc2;
+        delete osc3;
 	}
 
 	void resetVco()
@@ -185,23 +201,23 @@ public:
         {
             this->isBitcrusherEnabled = false;
         }
-        this->oscBitcrusher = audioUtils.getBitDepthDynamic(value);
+        this->oscBitcrusher = (float)audioUtils.getBitDepthDynamic(value);
     }
 
-	void process(float *sample, float note)
+	inline void process(float *sample, const float note)
 	{
 		float masterNote = note - 24.0f;
 		float osc1Note = note + osc1FineTune + osc1Tune;
-		osc1Note += lfoHandler1->getOsc1Pitch() + lfoHandler2->getOsc1Pitch() + freeAdsrHandler->getOsc1();
+        osc1Note += lfoHandler1->getOsc1Pitch() + lfoHandler2->getOsc1Pitch() + freeAdsrHandler->getOsc1() + this->envelopeEditorHandler->getOsc1Value(this->envelopeEditorVoiceHandler->getValueCentered());
 		
 		float osc2Note = note + osc2FineTune + osc2Tune;
-		osc2Note += lfoHandler1->getOsc2Pitch() + lfoHandler2->getOsc2Pitch() + freeAdsrHandler->getOsc2();
+        osc2Note += lfoHandler1->getOsc2Pitch() + lfoHandler2->getOsc2Pitch() + freeAdsrHandler->getOsc2() + this->envelopeEditorHandler->getOsc2Value(this->envelopeEditorVoiceHandler->getValueCentered());
 
 		float osc1PwSum = lfoHandler1->getPw() + this->osc1Pw + this->freeAdsrHandler->getPw();
 		if (osc1PwSum > 1.0f) osc1PwSum = 1.0f;
 
 		osc1->setPw(osc1PwSum);
-		osc2->setFm(lfoHandler1->getFm() + this->osc2Fm + this->freeAdsrHandler->getFm());
+		osc2->setFm(lfoHandler1->getFm() + this->osc2Fm + this->freeAdsrHandler->getFm() + this->envelopeEditorHandler->getFmValue(this->envelopeEditorVoiceHandler->getValue()));
 		osc2->setFmFrequency(osc1->getCurrentFrequency());
 
 		*sample += this->osc3->process(masterNote);
@@ -209,10 +225,13 @@ public:
 		float osc2Value = this->osc2->process(osc2Note);
         float ringmodValue = osc1Value * osc2Value;
 
+        float ringmodAmount = ringmodulation + this->envelopeEditorHandler->getRingmodValue(this->envelopeEditorVoiceHandler->getValue());
+        if (ringmodAmount > 1.0f) ringmodAmount = 1.0f;
+        
         float result = 
-            osc1Value * (ringmodulation - 1.0f) 
-            + osc2Value * (ringmodulation - 1.0f) 
-            + ringmodValue * ringmodulation * 8.0f;
+            osc1Value * (ringmodAmount - 1.0f) 
+            + osc2Value * (ringmodAmount - 1.0f) 
+            + ringmodValue * ringmodAmount * 8.0f;
 
         // Bitcrush
         if (this->isBitcrusherEnabled)

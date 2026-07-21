@@ -65,7 +65,12 @@ public:
 
 		oscNoise = new OscNoise(sampleRate);
         reset();
-	}
+    }
+	
+    ~FilterBp24db()
+    {
+        delete oscNoise;
+    }
 
 public:
     void reset()

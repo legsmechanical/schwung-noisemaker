@@ -24,7 +24,7 @@
 #if !defined(__AllPassFilter_h)
 #define __AllPassFilter_h
 
-#include "Math.h"
+#include "math.h"
 #include "AudioUtils.h"
 
 class AllPassFilter
@@ -60,7 +60,7 @@ public:
 
 	~AllPassFilter()
 	{
-		delete buffer;
+		delete[] buffer;
 	}
 
 	// all values [0..1]
