@@ -4,6 +4,20 @@ Port of **TAL Noisemaker** (Patrick Kunz, GPLv2) to a Schwung `sound_generator`.
 This file governs work inside this repo and takes precedence over workspace
 defaults for this module.
 
+> **⚠ REBUILT ON THE CURRENT TAL CODEBASE (v0.1.0).** The engine was re-vendored
+> from **DISTRHO-Ports tal-noisemaker** (not the old Nexbit 2010 snapshot). That
+> gives true 6-voice, Delay, Filter Drive, Vintage Noise, Moog/State-Variable
+> filters (12 types), the spline **Envelope Editor** (ported JUCE-free in
+> `src/dsp/EnvelopeEditor/` + `juce_shim.h`), and **256** factory presets.
+> Engine setters take **normalized 0..1 for everything** (enums convert via
+> `calcComboBoxValue`); the wrapper stores normalized and converts only at the
+> display boundary. Factory data: `factory_bank.h` (params; FILTERTYPE remapped
+> 10→12 items) + `factory_splines.h` (per-preset envelope shapes) via the
+> `tools/*.mjs` generators. Slot contract: the wrapper implements `state`/`name`
+> (required for module-preset save, knob destinations, persistence). Sections
+> below that reference "Nexbit" / "128 presets" / the `MAX_VOICES-1` voice-count
+> concern are **historical** (pre-rebuild) — trust this header.
+
 ## Architecture
 
 - **Engine** (`src/dsp/Engine`, `src/dsp/Effects`): vendored **byte-verbatim** from

@@ -1,6 +1,6 @@
 {
-  "version": "0.1.0-m1",
+  "version": "0.1.0",
   "name": "Noisemaker",
-  "description": "Virtual-analog synth ported from TAL Noisemaker (Patrick Kunz).",
-  "download_url": "https://github.com/legsmechanical/schwung-noisemaker/releases/download/v0.1.0-m1/noisemaker-module.tar.gz"
+  "description": "Virtual-analog synth ported from TAL Noisemaker (Patrick Kunz). 6-voice, delay, spline mod-envelope, 256 presets.",
+  "download_url": "https://github.com/legsmechanical/schwung-noisemaker/releases/download/v0.1.0/noisemaker-module.tar.gz"
 }
