@@ -78,6 +78,22 @@ while ((pm = progRe.exec(xml)) !== null) {
     if (idx === undefined) { unmapped.add(k); continue; }
     data[idx] = parseFloat(v);
   }
+
+  /* FILTERTYPE version skew: these v1.6 presets encode filtertype in a 10-item
+   * combo scheme (value = k/9, k = 0..9), but the vendored engine now has 12
+   * filter types (getNumComboBoxItems == 12) — Moog + Moog2 were appended after
+   * these presets were saved. The first 10 filters are identical, so preserve
+   * the intended filter: decode the authored index k = round(v*9) and re-encode
+   * for the 12-item scheme as k/11, so calcComboBoxValue(v,12) picks the same
+   * filter the preset meant (verified: KB Big Synth 0.444 -> HP24, matching the
+   * old bank). Every OTHER combo param's item count is unchanged (osc waves 3/5,
+   * LFO dests 8, free dest 6, porta 3, voices 6), so only filtertype is remapped. */
+  const ftIdx = enumMap['FILTERTYPE'];
+  if (ftIdx !== undefined) {
+    const k = Math.round(data[ftIdx] * 9);   // authored combo index (10-item)
+    data[ftIdx] = k / 11;                     // 12-item normalized, same filter
+  }
+
   presets.push({ name, data });
 }
 
