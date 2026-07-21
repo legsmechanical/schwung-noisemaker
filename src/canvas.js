@@ -699,6 +699,10 @@ const OSC2_WAVES = ["Saw","Pulse","Tri","Sine","Noise"];
 const OSC2_SHAPES = ["saw","square","tri","sine","swishy"];
 const LFO_WAVES  = ["Sin","Tri","Saw","Sqr","S+H","Rnd"];
 const LFO_SHAPES = ["sine","tri","saw","square","sh","swishy"];
+/* Envelope Editor (spline mod source) — order MUST match PARAMS[] option order. */
+const ENVDST    = ["Off","Filter","Osc1","Osc2","Osc1+2","FM","RingMod","Volume"];
+const ENVDST_SQ = ["Off","Flt","Os1","Os2","O12","FM","Rng","Vol"];
+const ENVSPD    = ["x1","x2","x4","x8","x16","x32"];
 
 const CONFIG = {
   name: "Noisemaker",
@@ -772,16 +776,22 @@ const CONFIG = {
         uni("delay_wet", "Wet"), uni("delay_time", "Time"), uni("delay_fb", "Fbk"),
         tog("delay_sync", "Sync"), tog("delay_fac_l", "2xL"), tog("delay_fac_r", "2xR"),
         uni("delay_hi", "HiCt"), uni("delay_lo", "LoCt")] },
+
+    /* ---- Env Draw (spline mod source; shape fixed per preset) ---- */
+    { label: "Env Draw", knobs: [
+        enumc("env_dest", "Dest", ENVDST, ENVDST_SQ),
+        uni("env_amt", "Amt"), enumc("env_speed", "Spd", ENVSPD),
+        blank(), blank(), blank(), blank(), blank()] },
   ],
 
   sections: [
     { name: "OSC 1", bank: 0 }, { name: "OSC 2", bank: 1 }, { name: "MASTER", bank: 2 },
     { name: "FILTER", bank: 3 }, { name: "FILT ENV", bank: 4 }, { name: "AMP ENV", bank: 5 },
     { name: "LFO 1", bank: 6 }, { name: "LFO 2", bank: 7 }, { name: "VOICE", bank: 8 },
-    { name: "REVERB", bank: 9 }, { name: "DELAY", bank: 10 },
+    { name: "REVERB", bank: 9 }, { name: "DELAY", bank: 10 }, { name: "ENV DRAW", bank: 11 },
   ],
 
-  icons: ["sawpulse","sawpulse","global","lp","envf","enva","sine","sine","bend","pan","routes"],
+  icons: ["sawpulse","sawpulse","global","lp","envf","enva","sine","sine","bend","pan","routes","envf"],
 
   /* Off-device defaults only (previewer/tests); on device every read is live. */
   defaults: {
@@ -796,6 +806,7 @@ const CONFIG = {
     voices: 6, portamento: 0, porta_mode: 0, vel_vol: 0, vel_env: 0, vel_cut: 0, pw_cutoff: 0, pw_pitch: 20,
     chorus1: 0, chorus2: 0, bitcrush: 0, reverb_wet: 0, reverb_decay: 0, reverb_pre: 0, reverb_hi: 100, reverb_lo: 0,
     delay_wet: 0, delay_time: 30, delay_fb: 0, delay_sync: 0, delay_fac_l: 0, delay_fac_r: 0, delay_hi: 100, delay_lo: 0,
+    env_dest: 0, env_amt: 0, env_speed: 0,
   },
 
   testExports: { FILT, LDST1, LDST2, FDST, PMODE },

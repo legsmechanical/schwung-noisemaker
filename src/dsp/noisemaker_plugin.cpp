@@ -13,8 +13,10 @@
  * apply_engine(); the only conversion is at the display boundary (disp<->norm),
  * where enums map a 0-based display index to the combo's normalized value.
  *
- * The drawable Envelope Editor mod source is deferred (JUCE-dependent); see
- * src/dsp/EnvelopeEditor/ stubs. Its params are accepted but inert.
+ * The Envelope Editor mod source (TAL's spline-based tempo-synced envelope) is
+ * ported JUCE-free (see src/dsp/EnvelopeEditor/ + juce_shim.h). The spline SHAPE
+ * is fixed per preset (installed from factory_splines.h by load_preset); only
+ * Amount / Speed / Destination are user-controllable (env_amt/env_speed/env_dest).
  */
 
 #include <cstdint>
@@ -27,6 +29,7 @@
 #include "Engine/SynthEngine.h"   // header-only TAL engine (single translation unit)
 #include "Engine/Params.h"        // SYNTHPARAMETERS enum + NUMPARAM
 #include "factory_bank.h"         // NM_FACTORY_BANK[] (generated; normalized values)
+#include "factory_splines.h"      // NM_FACTORY_SPLINES[] (generated; per-preset env shapes)
 
 /* ---- host / plugin ABI ---- */
 #ifndef MOVE_SAMPLE_RATE
@@ -215,6 +218,13 @@ static const param_def_t PARAMS[] = {
   { "delay_fb",      "Delay Feedbk",  DELAYFEEDBACK, K_PCT,    0,0, 0,{0} },
   { "delay_hi",      "Delay HiCut",   DELAYHIGHSHELF,K_PCT,    0,0, 0,{0} },
   { "delay_lo",      "Delay LoCut",   DELAYLOWSHELF, K_PCT,    0,0, 0,{0} },
+
+  /* ---- Envelope Editor (spline mod source; shape fixed per preset) ---- */
+  { "env_amt",       "Env Draw Amt",  ENVELOPEEDITORAMOUNT, K_PCT,    0,0, 0,{0} },  // engine squares it -> unipolar
+  { "env_speed",     "Env Draw Speed",ENVELOPEEDITORSPEED,  K_ENUM,    0,0, 6,
+        {"x1","x2","x4","x8","x16","x32"} },
+  { "env_dest",      "Env Draw Dest", ENVELOPEEDITORDEST1,  K_ENUM,    0,0, 8,
+        {"Off","Filter","Osc1","Osc2","Osc1+2","FM","RingMod","Volume"} },
 };
 
 static const int NM_PARAM_COUNT = (int)(sizeof(PARAMS) / sizeof(PARAMS[0]));
@@ -345,7 +355,7 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case DELAYLOWSHELF:   e->getDelayEngine()->setLowCut(v); break;
         case DELAYFEEDBACK:   e->getDelayEngine()->setFeedback(v); break;
         case VOICES:          e->setNumberOfVoices(v); break;
-        /* EnvelopeEditor params accepted but inert (deferred, stubbed). */
+        /* EnvelopeEditor mod source (shape installed per-preset by load_preset). */
         case ENVELOPEEDITORDEST1:   e->setEnvelopeEditorDest1(v); break;
         case ENVELOPEEDITORSPEED:   e->setEnvelopeEditorSpeed(v); break;
         case ENVELOPEEDITORAMOUNT:  e->setEnvelopeEditorAmount(v); break;
@@ -408,6 +418,42 @@ static void engine_to_disp(const param_def_t *p, float norm, char *buf, int len)
     }
 }
 
+/* Install a preset's Envelope Editor spline shape. Builds a fresh
+ * Array<SplinePoint*> from NM_FACTORY_SPLINES[idx] and hands it to the editor
+ * (which takes ownership of the new set); the previously-installed set is freed
+ * afterwards. Presets with no custom shape get the flat 0.5 line = no
+ * modulation (matches TAL's default and the empty-<splinePoints/> presets). */
+static void install_preset_spline(nm_instance_t *inst, int idx) {
+    const int nSets = (int)(sizeof(NM_FACTORY_SPLINES) / sizeof(NM_FACTORY_SPLINES[0]));
+    if (idx < 0 || idx >= nSets) return;
+    EnvelopeEditor *ed = inst->synth->getEnvelopeEditor();
+    Array<SplinePoint*> old = ed->getPoints();   // current (default or prev preset)
+
+    Array<SplinePoint*> pts;
+    const nm_spline_set_t *s = &NM_FACTORY_SPLINES[idx];
+    if (s->count >= 2) {
+        for (int i = 0; i < s->count; i++) {
+            const nm_spline_point_t *sp = &s->points[i];
+            SplinePoint *p = new SplinePoint(juce::Point<float>(sp->cx, sp->cy));
+            p->setStartPoint(sp->isStart != 0);
+            p->setEndPoint(sp->isEnd != 0);
+            p->setControlPointLeftPosition(juce::Point<float>(sp->clx, sp->cly));
+            p->setControlPointRightPosition(juce::Point<float>(sp->crx, sp->cry));
+            pts.add(p);
+        }
+    } else {
+        SplinePoint *start = new SplinePoint(juce::Point<float>(0.0f, 0.5f));
+        SplinePoint *end   = new SplinePoint(juce::Point<float>(1.0f, 0.5f));
+        start->setStartPoint(true);
+        end->setEndPoint(true);
+        pts.add(start);
+        pts.add(end);
+    }
+
+    ed->setPoints(pts);                                  // editor copies the pointer array
+    for (int i = 0; i < old.size(); i++) delete old[i];  // free the replaced set
+}
+
 /* Load one factory program (256-entry bank, normalized values). Release first
  * so a held note across a switch isn't stranded (setNumberOfVoices clears the
  * playing list without note-offing). */
@@ -420,6 +466,7 @@ static void load_preset(nm_instance_t *inst, int idx) {
         if (i == PANIC) continue;
         apply_engine(inst, i, p->programData[i]);
     }
+    install_preset_spline(inst, idx);   // per-preset envelope-editor shape
 }
 
 /* ======================================================================== *
@@ -439,6 +486,7 @@ static const char *kUiHierarchy =
      "{\"level\":\"lfo1\",\"label\":\"LFO 1\"},"
      "{\"level\":\"lfo2\",\"label\":\"LFO 2\"},"
      "{\"level\":\"env3\",\"label\":\"Env 3 (Free)\"},"
+     "{\"level\":\"envd\",\"label\":\"Env Draw\"},"
      "{\"level\":\"voice\",\"label\":\"Voicing / Vel\"},"
      "{\"level\":\"fx\",\"label\":\"Chorus / Reverb\"},"
      "{\"level\":\"delay\",\"label\":\"Delay\"}"
@@ -459,6 +507,8 @@ static const char *kUiHierarchy =
    "\"params\":[\"lfo2_wave\",\"lfo2_rate\",\"lfo2_amount\",\"lfo2_dest\",\"lfo2_sync\",\"lfo2_keytrig\",\"lfo2_phase\"]},"
  "\"env3\":{\"knobs\":[\"free_a\",\"free_d\",\"free_amt\",\"free_dest\",\"cutoff\",\"resonance\",\"filter_env\",\"volume\"],"
    "\"params\":[\"free_a\",\"free_d\",\"free_amt\",\"free_dest\"]},"
+ "\"envd\":{\"knobs\":[\"env_dest\",\"env_amt\",\"env_speed\",\"cutoff\",\"resonance\",\"filter_env\",\"aenv_a\",\"volume\"],"
+   "\"params\":[\"env_dest\",\"env_amt\",\"env_speed\"]},"
  "\"voice\":{\"knobs\":[\"voices\",\"portamento\",\"porta_mode\",\"vel_vol\",\"vel_env\",\"vel_cut\",\"pw_pitch\",\"pw_cutoff\"],"
    "\"params\":[\"voices\",\"portamento\",\"porta_mode\",\"vel_vol\",\"vel_env\",\"vel_cut\",\"pw_pitch\",\"pw_cutoff\"]},"
  "\"fx\":{\"knobs\":[\"chorus1\",\"chorus2\",\"reverb_wet\",\"reverb_decay\",\"reverb_pre\",\"reverb_hi\",\"reverb_lo\",\"volume\"],"
