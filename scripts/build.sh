@@ -21,6 +21,13 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
     # knobs resolve against; a stale copy = silently dead knob destinations.
     if command -v node >/dev/null 2>&1; then
         node "$REPO_ROOT/tools/gen_module_json.mjs" || exit 1
+        # Same reasoning for the Wave HUD's anchor table: position + name are
+        # the wrapper's, and a hand-copy would let the HUD name the wrong sound.
+        node "$REPO_ROOT/tools/gen_wave_anchors.mjs" || exit 1
+        if [ -f "$REPO_ROOT/../schwung-canvaskit/build.mjs" ]; then
+            node "$REPO_ROOT/../schwung-canvaskit/build.mjs" \
+                 "$REPO_ROOT/src/canvas.config.js" "$REPO_ROOT/src/canvas.js" || exit 1
+        fi
     else
         echo "WARNING: node not found - module.json ui_hierarchy NOT regenerated"
     fi

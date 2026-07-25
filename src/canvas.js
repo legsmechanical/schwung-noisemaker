@@ -711,21 +711,36 @@ const ENVSPD    = ["x1","x2","x4","x8","x16","x32"];
  * their own — "68" is not a waveform, a semitone count or a time ratio — so
  * each card interprets its value. */
 
-/* MUST stay in sync with NM_WAVE_STOPS in src/dsp/noisemaker_plugin.cpp
- * (name + display position of every anchor). `glyph` is 1-2 traces drawn
- * side by side, the way Echidna's wave card pairs icons for its combos. */
-const WAVE_ANCHORS = [
-  { at:   1, name: "SINE",      glyph: ["sine"]         },
-  { at:  12, name: "FM",        glyph: ["fm"]           },
-  { at:  23, name: "TRIANGLE",  glyph: ["tri"]          },
-  { at:  34, name: "SAW",       glyph: ["saw"]          },
-  { at:  45, name: "DUAL SAW",  glyph: ["saw", "saw"]   },
-  { at:  56, name: "SQUARE",    glyph: ["square"]       },
-  { at:  67, name: "THIN PLS",  glyph: ["pulse"]        },
-  { at:  78, name: "PULSE+SAW", glyph: ["pulse", "saw"] },
-  { at:  89, name: "RING",      glyph: ["ring"]         },
-  { at: 100, name: "SUB BASS",  glyph: ["saw", "sub"]   },
+/* Icon per anchor, keyed by name. Hand-authored: which waveform to draw is a
+ * canvas-side judgement the wrapper knows nothing about. Keys must match the
+ * names in NM_WAVE_STOPS. */
+const WAVE_GLYPHS = {
+  "Sine": ["sine"], "FM": ["fm"], "Triangle": ["tri"], "Saw": ["saw"],
+  "Dual Saw": ["saw", "saw"], "Square": ["square"], "Thin Pls": ["pulse"],
+  "Pulse+Saw": ["pulse", "saw"], "Ring": ["ring"], "Sub Bass": ["saw", "sub"],
+};
+
+/* GENERATED from NM_WAVE_STOPS by tools/gen_wave_anchors.mjs — DO NOT EDIT.
+ * Position and name are the wrapper's to define; duplicating them by hand here
+ * meant the HUD would silently lie the moment an anchor was re-ordered. */
+/* BEGIN GENERATED WAVE_ANCHORS */
+const WAVE_ANCHOR_POS = [
+  { at: 1, name: "Sine" },
+  { at: 12, name: "FM" },
+  { at: 23, name: "Triangle" },
+  { at: 34, name: "Saw" },
+  { at: 45, name: "Dual Saw" },
+  { at: 56, name: "Square" },
+  { at: 67, name: "Thin Pls" },
+  { at: 78, name: "Pulse+Saw" },
+  { at: 89, name: "Ring" },
+  { at: 100, name: "Sub Bass" },
 ];
+/* END GENERATED WAVE_ANCHORS */
+
+const WAVE_ANCHORS = WAVE_ANCHOR_POS.map(function (a) {
+  return { at: a.at, name: a.name, glyph: WAVE_GLYPHS[a.name] || ["saw"] };
+});
 
 /* Shapes the kit's shapeSample doesn't cover. `fm` draws a phase-modulated
  * sine (the FM zone's actual mechanism), `ring` a carrier times a higher

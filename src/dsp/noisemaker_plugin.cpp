@@ -414,8 +414,8 @@ static const nm_wave_stop_t NM_WAVE_STOPS[] = {
   {  34, "Saw",         NM_O1_SAW,   NM_O2_SAW,   0.80f,0.00f, 0.00f, 0.50f,  0, 0.10f, 0, 0.000f, 0.00f },
   {  45, "Dual Saw",    NM_O1_SAW,   NM_O2_SAW,   0.65f,0.65f, 0.00f, 0.50f,  0, 0.35f, 0, 0.000f, 0.00f },
   {  56, "Square",      NM_O1_PULSE, NM_O2_SAW,   0.80f,0.00f, 0.00f, 0.50f,  0, 0.10f, 0, 0.000f, 0.00f },
-  {  67, "Thin Pulse",  NM_O1_PULSE, NM_O2_SAW,   0.85f,0.00f, 0.00f, 0.88f,  0, 0.10f, 0, 0.000f, 0.00f },
-  {  78, "Pulse + Saw", NM_O1_PULSE, NM_O2_SAW,   0.60f,0.60f, 0.00f, 0.88f,  0, 0.25f, 0, 0.000f, 0.00f },
+  {  67, "Thin Pls",    NM_O1_PULSE, NM_O2_SAW,   0.85f,0.00f, 0.00f, 0.88f,  0, 0.10f, 0, 0.000f, 0.00f },
+  {  78, "Pulse+Saw",   NM_O1_PULSE, NM_O2_SAW,   0.60f,0.60f, 0.00f, 0.88f,  0, 0.25f, 0, 0.000f, 0.00f },
   {  89, "Ring",        NM_O1_PULSE, NM_O2_SAW,   0.45f,0.45f, 0.00f, 0.50f,  7, 0.10f, 0, 0.000f, 0.25f },
   { 100, "Sub Bass",    NM_O1_SAW,   NM_O2_SAW,   0.70f,0.00f, 0.65f, 0.50f,  0, 0.10f, 0, 0.000f, 0.00f },
 };
