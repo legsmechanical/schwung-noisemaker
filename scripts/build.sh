@@ -15,6 +15,15 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         echo "Building Docker image (first time only)..."
         docker build -t "$IMAGE_NAME" -f "$SCRIPT_DIR/Dockerfile" "$REPO_ROOT"
     fi
+    # Keep module.json's embedded ui_hierarchy in step with the wrapper BEFORE
+    # the container runs (node does not exist inside the build image). The host
+    # reads that block at synth load to build the slot param table that custom
+    # knobs resolve against; a stale copy = silently dead knob destinations.
+    if command -v node >/dev/null 2>&1; then
+        node "$REPO_ROOT/tools/gen_module_json.mjs" || exit 1
+    else
+        echo "WARNING: node not found - module.json ui_hierarchy NOT regenerated"
+    fi
     echo "Running build..."
     docker run --rm \
         -v "$REPO_ROOT:/build" \
