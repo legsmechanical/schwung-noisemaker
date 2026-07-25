@@ -1,4 +1,4 @@
-// Off-device renderer for src/canvas.js (the noisemaker_editor overlay).
+// Off-device renderer for src/canvas.js (the bank_editor overlay).
 // Builds a real 128x64 1-bit framebuffer ctx with a small bitmap font, evals
 // canvas.js, and renders every page (plus one page with a selected knob) into
 // one stacked PNG so the layout can be eyeballed without a device.
@@ -13,7 +13,7 @@ import zlib from "node:zlib";
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "..", "src", "canvas.js"), "utf8");
 (0, eval)(src);
-const ed = globalThis.noisemaker_editor, T = ed._test;
+const ed = globalThis.bank_editor, T = ed._test;
 
 const W = 128, H = 64;
 
@@ -47,7 +47,7 @@ const ADV = 6, GH = 5;
 function makeCtx() {
   const fb = new Uint8Array(W * H);
   const px = (x, y, v) => { x |= 0; y |= 0; if (x >= 0 && x < W && y >= 0 && y < H) fb[y * W + x] = v ? 1 : 0; };
-  const store = SEED();
+  const store = SEED(); if (globalThis.__over) Object.assign(store, globalThis.__over);
   return {
     fb, width: W, height: H,
     state: {},
@@ -79,24 +79,39 @@ function SEED() {
     lfo1_wave: 0, lfo1_rate: 30, lfo1_amount: 0, lfo1_dest: 0, lfo1_sync: 0, lfo1_keytrig: 0, lfo1_phase: 0, bitcrush: 0,
     lfo2_wave: 0, lfo2_rate: 30, lfo2_amount: 0, lfo2_dest: 0, lfo2_sync: 0, lfo2_keytrig: 0, lfo2_phase: 0,
     free_a: 0, free_d: 40, free_amt: 0, free_dest: 0, pw_pitch: 20, porta_mode: 0,
+    wave: 0, tune2: 0, fenv_time: 50, aenv_time: 50,
     chorus1: 1, chorus2: 0, reverb_wet: 25, reverb_decay: 40, reverb_pre: 10, reverb_hi: 60, reverb_lo: 15,
   };
   return s;
 }
 
-function renderPage(pageIdx, lastKnob = -1) {
+/* `over` seeds param values for this frame only — needed to preview the macro
+ * HUDs, which only surface while their own knob is held (lastKnob). */
+function renderPage(pageIdx, lastKnob = -1, over = null) {
+  globalThis.__over = over;
   const ctx = makeCtx();
   ed.draw(ctx);                 // first frame installs cache
   ctx.state.init = true; ctx.state.page = pageIdx; ctx.state.lastKnob = lastKnob; ctx.state.accum = [0,0,0,0,0,0,0,0];
   ctx._pcache = {};
   ctx.fb.fill(0);
   ed.draw(ctx);
+  globalThis.__over = null;
   return ctx.fb;
 }
 
 const frames = [];
-for (let p = 0; p < T.PAGES.length; p++) frames.push({ fb: renderPage(p), name: T.PAGES[p].name });
-frames.push({ fb: renderPage(2, 1), name: "FILTER (knob 2 = Cutoff selected)" });
+for (let p = 0; p < T.BANKS.length; p++) frames.push({ fb: renderPage(p), name: T.BANKS[p].label });
+frames.push({ fb: renderPage(4, 1), name: "FILTER (knob 2 = Cutoff selected)" });
+
+/* Macro value HUDs (bank 0 = Macros; knob 0 wave, 1 tune2, 5 fenv_time). */
+frames.push({ fb: renderPage(0, 0, { wave: 0 }),        name: "HUD: WAVE = OFF" });
+frames.push({ fb: renderPage(0, 0, { wave: 45 }),       name: "HUD: WAVE on the DUAL SAW anchor" });
+frames.push({ fb: renderPage(0, 0, { wave: 74 }),       name: "HUD: WAVE between THIN PLS and PULSE+SAW" });
+frames.push({ fb: renderPage(0, 1, { tune2: 0 }),   name: "HUD: OSC2 PITCH raw 0 = UNISON" });
+frames.push({ fb: renderPage(0, 1, { tune2: 5 }),   name: "HUD: OSC2 PITCH raw 5 = UNISON +12C (fine window)" });
+frames.push({ fb: renderPage(0, 1, { tune2: 74 }),  name: "HUD: OSC2 PITCH raw 74 = +7 ST" });
+frames.push({ fb: renderPage(0, 1, { tune2: 132 }), name: "HUD: OSC2 PITCH raw 132 = +1 OCT +10C" });
+frames.push({ fb: renderPage(0, 5, { fenv_time: 68 }),  name: "HUD: FILTER TIME = x1.91" });
 
 /* ---- compose stacked, scaled ---- */
 const SCALE = 3, GAP = 6;
