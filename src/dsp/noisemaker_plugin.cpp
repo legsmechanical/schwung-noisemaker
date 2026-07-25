@@ -92,6 +92,37 @@ enum ParamKind {
 
 #define MAX_ENUM_OPTS 12
 
+/* ---- Macro params -------------------------------------------------------
+ * Three "one knob, many params" controls, modelled on Echidna's Macros bank.
+ * They are NOT SYNTHPARAMETERS; they occupy slots past the end of the engine
+ * enum in inst->eng[], so find_param / build_state / restore_state / get_param
+ * treat them as ordinary params with no special-casing. The preset loop (which
+ * runs i < NUMPARAM) therefore cannot touch them -- so load_preset resets them
+ * EXPLICITLY via reset_macros(). See that function for why persisting them
+ * across a preset change is a bug, not a feature.
+ *
+ *   NM_M_WAVE    write-through: drives osc1/osc2 waveform + level, PW, FM,
+ *                osc2 tune and ringmod along a curated sweep (NM_WAVE_STOPS).
+ *                Display 0 is an OFF detent: the macro is inert and the
+ *                preset's own oscillator setup stands.
+ *   NM_M_TUNE2   osc2 pitch, UPWARD only: 0..24 semitones, semitone-quantized
+ *                (Echidna's tune2 convention — 0 = unison, 12 = +1 octave,
+ *                24 = +2). Composes additively with whatever offset the Wave
+ *                macro is applying; see nm_apply_osc2_tune.
+ *   NM_M_FENV_T  non-destructive time-scale over the filter env A/D/R.
+ *   NM_M_AENV_T  ditto for the amp env. 50 = x1. The base A/D/R values in
+ *                inst->eng[] are never rewritten, so the Filter/Amp Env pages
+ *                keep showing the real knob positions and the macro is
+ *                fully reversible.
+ */
+enum {
+    NM_M_WAVE = NUMPARAM,
+    NM_M_TUNE2,
+    NM_M_FENV_T,
+    NM_M_AENV_T,
+    NM_ENG_SLOTS
+};
+
 typedef struct {
     const char *key;
     const char *name;
@@ -113,6 +144,12 @@ static const char *FDST_OPTS[] = {"Off","Filter","Osc1","Osc2","PW","FM"};      
 static const char *PMODE_OPTS[] = {"Off","Auto","On"};                          // 3
 
 static const param_def_t PARAMS[] = {
+  /* ---- Macros (see NM_M_* above; not engine params) ---- */
+  { "wave",          "Wave",          NM_M_WAVE,     K_PCT,    0,0, 0,{0} },
+  { "tune2",         "Osc2 Pitch",    NM_M_TUNE2,    K_INT,    0,255, 256,{0} }, // native 8-bit -> 0..+24 st
+  { "fenv_time",     "Filter Time",   NM_M_FENV_T,   K_BIPOLAR,0,0, 0,{0} },
+  { "aenv_time",     "Amp Time",      NM_M_AENV_T,   K_BIPOLAR,0,0, 0,{0} },
+
   /* ---- Master ---- */
   { "volume",        "Volume",        VOLUME,        K_PCT,    0,0, 0,{0} },
   { "highpass",      "High Pass",     HIGHPASS,      K_PCT,    0,0, 0,{0} },
@@ -257,17 +294,268 @@ static const int DEFAULT_PATCH_COUNT = (int)(sizeof(DEFAULT_PATCH) / sizeof(DEFA
 typedef struct {
     char        module_dir[256];
     SynthEngine *synth;
-    float       eng[NUMPARAM];   // shadow of NORMALIZED values, by SYNTHPARAMETERS
+    float       eng[NM_ENG_SLOTS];  // shadow of NORMALIZED values, by SYNTHPARAMETERS
+                                    // (+ the NM_M_* macro slots past NUMPARAM)
     int         octave_transpose;
     float       tempo_bpm;
     int         editor_page;     // canvas overlay state (persists per instance)
     int         cur_preset;      // index into NM_FACTORY_BANK, -1 == Init
+    float       wave_tune_semis; // the Wave macro's osc2 pitch contribution
+                                 // (FM compensation or an anchor's interval);
+                                 // summed with the tune2 macro, not a param
 } nm_instance_t;
 
 static const param_def_t *find_param(const char *key) {
     for (int i = 0; i < NM_PARAM_COUNT; i++)
         if (strcmp(PARAMS[i].key, key) == 0) return &PARAMS[i];
     return NULL;
+}
+
+static void apply_engine(nm_instance_t *inst, int idx, float v);
+static float combo_idx_to_norm(int idx, int n);
+
+/* ======================================================================== *
+ *  Macro: envelope time
+ * ========================================================================
+ * TAL's Adsr (Engine/Adsr.h) derives a per-sample rate coefficient from the
+ * normalized knob v as
+ *
+ *     u = 1 - v/2        rate(v) = k * (f + c * u^p)
+ *
+ * with f = 0.0003 and (c,p) = (7,24) attack, (7,23) decay, (2,22) release.
+ * The integrators are one-pole approaches, so segment time is proportional to
+ * 1/rate; the sample-rate factor k and release's extra x8 both cancel in a
+ * ratio, making the transform below sample-rate independent.
+ *
+ * To stretch a segment by N we want rate(v') = rate(v)/N, i.e.
+ *
+ *     u' = ( ((f + c*u^p)/N - f) / c )^(1/p)      v' = 2*(1 - u')
+ *
+ * Note this is a POWER law in u, not an exponential in v — Echidna's trick of
+ * adding ln(N)/b to the normalized value does NOT transfer here.
+ *
+ * Two boundaries fall out of the f term, which dominates above v ~ 0.68:
+ *   - N < 1 at low v: v' goes negative, clamps to 0, and you sit on the
+ *     engine's 3-5 ms floor. Graceful.
+ *   - N > 1 at high v: no solution exists once (f + c*u^p)/N <= f. The engine
+ *     physically cannot run slower, so we clamp to v' = 1 and accept a
+ *     smaller-than-N stretch. Stages saturate at slightly different v, so a
+ *     large stretch applied to an already-long envelope will de-proportion it.
+ */
+/* Macro knob (normalized, 0.5 = centre) -> a SHIFT of the envelope knob
+ * positions themselves, NOT a multiplier on the resulting times.
+ *
+ * A multiplier is the mathematically tidy answer and the musically wrong one:
+ * x6 of a zero-length segment is still zero, so on the many factory patches
+ * whose amp envelope is a pure gate (A=0 D=0 S=1 R=0 -- the corpus median for
+ * BS and LD) the knob does visibly and audibly nothing. What a TIME control
+ * looks like it does is drag all the envelope sliders together, and that is
+ * what it should do: from a gate, turning it up must CREATE a release you can
+ * see on the ADSR graphic and hear on the tail.
+ *
+ * The shift is proportional to the travel REMAINING in that direction, so it
+ * is always responsive and never hits a wall:
+ *      d > 0:  v' = v + d * (1 - v)      (0 still moves; 1 stays 1)
+ *      d < 0:  v' = v + d * v            (1 still moves; 0 stays 0)
+ * with d = (macro - 0.5) * 2, i.e. -1 at min, 0 at the detent, +1 at max.
+ *
+ * Trade worth knowing: this does NOT preserve A:D:R proportions the way a true
+ * ratio would, because the underlying time law is non-linear. That is the right
+ * trade -- "all the sliders move together" is how the control reads. */
+static float nm_env_time_shift(float v, float m) {
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    if (m < 0.0f) m = 0.0f;
+    if (m > 1.0f) m = 1.0f;
+    const float d = (m - 0.5f) * 2.0f;
+    if (d > 0.0f) return v + d * (1.0f - v);
+    if (d < 0.0f) return v + d * v;
+    return v;                      /* exact pass-through at the detent */
+}
+
+/* ======================================================================== *
+ *  Macro: Wave
+ * ========================================================================
+ * TAL hard-switches oscillator shapes (Osc::process is a plain switch, no
+ * blend coefficient anywhere), so the sweep below is built from ANCHOR
+ * configurations with a level CROSSFADE between neighbours: the continuous
+ * fields (levels, pulse width, FM, ringmod, detune) lerp, while waveform,
+ * coarse tune and sync SNAP. Anchors sit on exact display values so each named
+ * sound is precisely dialable, and the travel between two of them is a usable
+ * blend rather than a jump.
+ *
+ * FM note: osc2 is the CARRIER and osc1 the MODULATOR (Vco.h does
+ * osc2->setFm(osc2Fm) + osc2->setFmFrequency(osc1->getCurrentFrequency()),
+ * despite the OSC2FM / setOsc1Fm naming), and only osc1's FREQUENCY is used --
+ * the modulator is an internal sine -- so osc1's waveform is irrelevant there
+ * and it stays muted. Osc::process updates currentFrequency BEFORE the
+ * oscVolume>0 gate, so a silent osc1 still modulates. */
+enum { NM_O1_SAW = 0, NM_O1_PULSE = 1, NM_O1_NOISE = 2 };
+enum { NM_O2_SAW = 0, NM_O2_PULSE = 1, NM_O2_TRI = 2, NM_O2_SINE = 3, NM_O2_NOISE = 4 };
+
+typedef struct {
+    int   disp;          /* knob display value 1..100 this anchor sits on */
+    const char *name;
+    int   o1wave, o2wave;
+    float o1vol, o2vol, subvol;
+    float pw;            /* osc1 pulse width */
+    int   tune2;         /* osc2 coarse tune, semitones */
+    float detune;
+    int   sync;
+    float fm;            /* osc2 FM amount (osc1 is the modulator) */
+    float ring;
+} nm_wave_stop_t;
+
+static const nm_wave_stop_t NM_WAVE_STOPS[] = {
+  /* disp  name          o1wave       o2wave       o1vol o2vol  sub    pw    t2  detune sync  fm     ring */
+  {   1, "Sine",        NM_O1_SAW,   NM_O2_SINE,  0.00f,0.90f, 0.00f, 0.50f,  0, 0.05f, 0, 0.000f, 0.00f },
+  {  12, "FM",          NM_O1_SAW,   NM_O2_SINE,  0.00f,0.85f, 0.00f, 0.50f,  0, 0.00f, 0, 0.075f, 0.00f },
+  {  23, "Triangle",    NM_O1_SAW,   NM_O2_TRI,   0.00f,0.85f, 0.00f, 0.50f,  0, 0.05f, 0, 0.000f, 0.00f },
+  {  34, "Saw",         NM_O1_SAW,   NM_O2_SAW,   0.80f,0.00f, 0.00f, 0.50f,  0, 0.10f, 0, 0.000f, 0.00f },
+  {  45, "Dual Saw",    NM_O1_SAW,   NM_O2_SAW,   0.65f,0.65f, 0.00f, 0.50f,  0, 0.35f, 0, 0.000f, 0.00f },
+  {  56, "Square",      NM_O1_PULSE, NM_O2_SAW,   0.80f,0.00f, 0.00f, 0.50f,  0, 0.10f, 0, 0.000f, 0.00f },
+  {  67, "Thin Pulse",  NM_O1_PULSE, NM_O2_SAW,   0.85f,0.00f, 0.00f, 0.88f,  0, 0.10f, 0, 0.000f, 0.00f },
+  {  78, "Pulse + Saw", NM_O1_PULSE, NM_O2_SAW,   0.60f,0.60f, 0.00f, 0.88f,  0, 0.25f, 0, 0.000f, 0.00f },
+  {  89, "Ring",        NM_O1_PULSE, NM_O2_SAW,   0.45f,0.45f, 0.00f, 0.50f,  7, 0.10f, 0, 0.000f, 0.25f },
+  { 100, "Sub Bass",    NM_O1_SAW,   NM_O2_SAW,   0.70f,0.00f, 0.65f, 0.50f,  0, 0.10f, 0, 0.000f, 0.00f },
+};
+static const int NM_WAVE_STOP_COUNT = (int)(sizeof(NM_WAVE_STOPS) / sizeof(NM_WAVE_STOPS[0]));
+
+/* TAL's FM modulator is UNIPOLAR -- the oscillators do
+ *     freq += fm * 10 * fmFreq * (1 + sin(phase))
+ * and that "1 +" is a DC term, so deepening FM also RAISES pitch. With osc1 at
+ * frequency F and osc2 detuned by s semitones, osc2's average frequency is
+ * F*(2^(s/12) + 10*fm); holding that at F needs
+ *     s = 12 * log2(1 - 10*fm)
+ * which is why the sweep caps fm at 0.075: that is exactly s = -24, the bottom
+ * of OSC2TUNE's range (AudioUtils::getOscTuneValue -> value*48 - 24). The
+ * result is an FM zone that gets progressively more metallic at CONSTANT
+ * pitch, which is fiddly to dial by hand and is the point of the macro. */
+static float nm_fm_tune_semis(float fm) {
+    float x = 1.0f - 10.0f * fm;
+    if (x < 0.0625f) x = 0.0625f;          /* -48 st floor; the cap keeps us above this */
+    float s = 12.0f * log2f(x);
+    if (s < -24.0f) s = -24.0f;
+    if (s > 24.0f) s = 24.0f;
+    return s;
+}
+
+/* Normalized value that survives getOscTuneValue's truncate-toward-zero:
+ * (int)(v*48 - 24) must land on `semis`, so aim half a step away from the
+ * boundary in whichever direction truncation rounds. */
+static float nm_tune_norm(int semis) {
+    if (semis < -24) semis = -24;
+    if (semis > 24) semis = 24;
+    float x = (float)semis + (semis < 0 ? -0.5f : 0.5f);
+    return (x + 24.0f) / 48.0f;
+}
+
+/* tune2 knob -> semitones, Echidna's law (its canvas.js tune2Semis).
+ *
+ * The knob is a native 8-bit 0..255 spanning 0..+24 semitones. Everywhere it
+ * SNAPS to whole semitones, EXCEPT within +/-8 native steps of the three
+ * anchors (0 / 128 / 255 = unison / +1 oct / +2 oct), where it becomes a fine
+ * DETUNE of up to +/-0.2 semitone (+/-20 cents at the window edge). That gives
+ * clean intervals over most of the travel and usable beating right where you
+ * want it. The 8-bit wire exists for this: 0..24 alone has no room for it. */
+#define NM_TUNE2_DSTEPS 8.0f
+#define NM_TUNE2_DMAX   0.2f
+static float nm_tune2_semis(float knob01) {
+    const float raw = floorf(knob01 * 255.0f + 0.5f);
+    static const float kCenter[3] = { 0.0f, 128.0f, 255.0f };
+    static const float kSemis[3]  = { 0.0f,  12.0f,  24.0f };
+    for (int i = 0; i < 3; i++) {
+        const float steps = raw - kCenter[i];
+        if (fabsf(steps) <= NM_TUNE2_DSTEPS)
+            return kSemis[i] + (steps / NM_TUNE2_DSTEPS) * NM_TUNE2_DMAX;
+    }
+    return floorf(raw * 24.0f / 255.0f + 0.5f);      /* nearest semitone */
+}
+
+/* Osc2 pitch is written by TWO macros, so it goes through one place.
+ *
+ *   tune2  -- the user's upward-only 0..+24 semitone knob (with the fine
+ *             detune windows above)
+ *   wave   -- an additive offset: the FM zone's pitch compensation, or an
+ *             anchor's interval (Ring's +7)
+ *
+ * They sum. The coarse part goes to OSC2TUNE (which the engine truncates to
+ * whole semitones) and any fraction to OSC2FINETUNE (+/-1 semitone), which is
+ * what carries both the fine detune and the FM compensation's sub-semitone
+ * part instead of letting them be quantised away. */
+static void nm_apply_osc2_tune(nm_instance_t *inst) {
+    float s = nm_tune2_semis(inst->eng[NM_M_TUNE2]) + inst->wave_tune_semis;
+    if (s < -24.0f) s = -24.0f;
+    if (s >  24.0f) s =  24.0f;
+
+    int   coarse = (int)floorf(s + 0.5f);
+    float frac   = s - (float)coarse;
+    if (frac < -1.0f) frac = -1.0f;
+    if (frac >  1.0f) frac =  1.0f;
+    apply_engine(inst, OSC2TUNE,     nm_tune_norm(coarse));
+    apply_engine(inst, OSC2FINETUNE, frac * 0.5f + 0.5f);
+}
+
+/* Discrete-field rule for a crossfade segment: an oscillator that is silent
+ * at one end takes the OTHER end's value for the whole segment (so it fades
+ * in already wearing its destination shape, or fades out still wearing its
+ * source shape); one that is audible at both ends switches at the midpoint. */
+static int nm_pick_disc(int va, int vb, float lvla, float lvlb, float f) {
+    if (lvla <= 0.0001f) return vb;
+    if (lvlb <= 0.0001f) return va;
+    return (f < 0.5f) ? va : vb;
+}
+
+/* Drive the oscillator section from the Wave macro. v is the macro's stored
+ * normalized value; v == 0 is the OFF detent and never reaches here. */
+static void nm_apply_wave_macro(nm_instance_t *inst, float v) {
+    float d = v * 100.0f;
+    if (d < 1.0f) d = 1.0f;
+    if (d > 100.0f) d = 100.0f;
+
+    int i = 0;
+    while (i < NM_WAVE_STOP_COUNT - 2 && d > (float)NM_WAVE_STOPS[i + 1].disp) i++;
+    const nm_wave_stop_t *a = &NM_WAVE_STOPS[i];
+    const nm_wave_stop_t *b = &NM_WAVE_STOPS[i + 1];
+    float span = (float)(b->disp - a->disp);
+    float f = (span > 0.5f) ? (d - (float)a->disp) / span : 0.0f;
+    if (f < 0.0f) f = 0.0f;
+    if (f > 1.0f) f = 1.0f;
+    #define NM_LERP(field) (a->field + (b->field - a->field) * f)
+
+    /* Continuous: the crossfade itself. */
+    const float o1vol  = NM_LERP(o1vol);
+    const float o2vol  = NM_LERP(o2vol);
+    const float subvol = NM_LERP(subvol);
+    const float pw     = NM_LERP(pw);
+    const float fm     = NM_LERP(fm);
+    const float ring   = NM_LERP(ring);
+    const float detune = NM_LERP(detune);
+    #undef NM_LERP
+
+    /* Discrete: snap. */
+    const int o1wave = nm_pick_disc(a->o1wave, b->o1wave, a->o1vol, b->o1vol, f);
+    const int o2wave = nm_pick_disc(a->o2wave, b->o2wave, a->o2vol, b->o2vol, f);
+    const int tune2  = nm_pick_disc(a->tune2,  b->tune2,  a->o2vol, b->o2vol, f);
+    const int sync   = nm_pick_disc(a->sync,   b->sync,   1.0f,     1.0f,     f);
+
+    apply_engine(inst, OSC1WAVEFORM,   combo_idx_to_norm(o1wave, 3));
+    apply_engine(inst, OSC2WAVEFORM,   combo_idx_to_norm(o2wave, 5));
+    apply_engine(inst, OSC1VOLUME,     o1vol);
+    apply_engine(inst, OSC2VOLUME,     o2vol);
+    apply_engine(inst, OSC3VOLUME,     subvol);
+    apply_engine(inst, OSC1PW,         pw);
+    apply_engine(inst, OSC2FM,         fm);
+    apply_engine(inst, RINGMODULATION, ring);
+    apply_engine(inst, DETUNE,         detune);
+    apply_engine(inst, OSCSYNC,        sync ? 1.0f : 0.0f);
+
+    /* FM raises pitch (see nm_fm_tune_semis), so inside the FM zone osc2's
+     * tune is spent compensating and the anchor's own interval is ignored.
+     * Either way this is only the Wave macro's CONTRIBUTION -- the tune2 knob
+     * adds to it in nm_apply_osc2_tune. */
+    inst->wave_tune_semis = (fm > 0.0f) ? nm_fm_tune_semis(fm) : (float)tune2;
+    nm_apply_osc2_tune(inst);
 }
 
 /* Push one NORMALIZED value into the engine. Most params pass straight to their
@@ -284,14 +572,18 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case FILTERCONTOUR:  e->setFilterContour(v); break;
         case KEYFOLLOW:      e->setKeyfollow(v); break;
         case FILTERDRIVE:    e->setFilterDrive(v); break;
-        case FILTERATTACK:   e->setFilterAttack(v); break;
-        case FILTERDECAY:    e->setFilterDecay(v); break;
+        /* A/D/R go through the env-time macro on the way to the engine; the
+         * unscaled value stays in inst->eng[] (set above), so the macro never
+         * consumes the base knob and load_preset gets the scaling for free.
+         * Sustain is a LEVEL, not a time — deliberately not scaled. */
+        case FILTERATTACK:   e->setFilterAttack (nm_env_time_shift(v, inst->eng[NM_M_FENV_T])); break;
+        case FILTERDECAY:    e->setFilterDecay  (nm_env_time_shift(v, inst->eng[NM_M_FENV_T])); break;
         case FILTERSUSTAIN:  e->setFilterSustain(v); break;
-        case FILTERRELEASE:  e->setFilterRelease(v); break;
-        case AMPATTACK:      e->setAmpAttack(v); break;
-        case AMPDECAY:       e->setAmpDecay(v); break;
+        case FILTERRELEASE:  e->setFilterRelease(nm_env_time_shift(v, inst->eng[NM_M_FENV_T])); break;
+        case AMPATTACK:      e->setAmpAttack    (nm_env_time_shift(v, inst->eng[NM_M_AENV_T])); break;
+        case AMPDECAY:       e->setAmpDecay     (nm_env_time_shift(v, inst->eng[NM_M_AENV_T])); break;
         case AMPSUSTAIN:     e->setAmpSustain(v); break;
-        case AMPRELEASE:     e->setAmpRelease(v); break;
+        case AMPRELEASE:     e->setAmpRelease   (nm_env_time_shift(v, inst->eng[NM_M_AENV_T])); break;
         case OSC1VOLUME:     e->setOsc1Volume(v); break;
         case OSC2VOLUME:     e->setOsc2Volume(v); break;
         case OSC3VOLUME:     e->setOsc3Volume(v); break;
@@ -361,6 +653,22 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
         case ENVELOPEEDITORAMOUNT:  e->setEnvelopeEditorAmount(v); break;
         case ENVELOPEONESHOT:       e->setEnvelopeEditorOneShot(v > 0.5f); break;
         case ENVELOPEFIXTEMPO:      e->setEnvelopeEditorFixTempo(v > 0.5f); break;
+
+        /* ---- Macros ---- */
+        case NM_M_WAVE:  if (v > 0.0f) nm_apply_wave_macro(inst, v); break;  /* 0 = OFF detent */
+        case NM_M_TUNE2: nm_apply_osc2_tune(inst); break;
+        /* Re-push the six base A/D/R values so the new ratio takes effect; the
+         * cases above re-scale them from inst->eng[] on the way through. */
+        case NM_M_FENV_T:
+            apply_engine(inst, FILTERATTACK,  inst->eng[FILTERATTACK]);
+            apply_engine(inst, FILTERDECAY,   inst->eng[FILTERDECAY]);
+            apply_engine(inst, FILTERRELEASE, inst->eng[FILTERRELEASE]);
+            break;
+        case NM_M_AENV_T:
+            apply_engine(inst, AMPATTACK,  inst->eng[AMPATTACK]);
+            apply_engine(inst, AMPDECAY,   inst->eng[AMPDECAY]);
+            apply_engine(inst, AMPRELEASE, inst->eng[AMPRELEASE]);
+            break;
         default: break;
     }
 }
@@ -459,10 +767,33 @@ static void install_preset_spline(nm_instance_t *inst, int idx) {
 /* Load one factory program (256-entry bank, normalized values). Release first
  * so a held note across a switch isn't stranded (setNumberOfVoices clears the
  * playing list without note-offing). */
+/* Macros back to neutral. Called by load_preset BEFORE the preset's params are
+ * applied, so the incoming A/D/R land at x1 rather than inheriting whatever
+ * scaling the last patch's macro happened to be sitting at.
+ *
+ * These slots live past NUMPARAM precisely so the preset loop cannot touch
+ * them -- but that must NOT mean they survive a preset change. Leaving FEG at
+ * max silently gave every subsequently loaded preset 6x envelope times (and
+ * left the knob with nowhere to travel, which reads as "the macro does
+ * nothing"). The write-through macros are worse: wave/tune2 do not re-apply on
+ * preset load, so a stale position would keep displaying while the preset's
+ * own oscillator setup was actually in force -- the knob lying about the sound.
+ *
+ * State restore still round-trips: restore_state calls load_preset first and
+ * then overlays every PARAMS key, macros included. */
+static void reset_macros(nm_instance_t *inst) {
+    inst->eng[NM_M_WAVE]   = 0.0f;   /* OFF */
+    inst->eng[NM_M_TUNE2]  = 0.0f;   /* unison */
+    inst->eng[NM_M_FENV_T] = 0.5f;   /* x1 */
+    inst->eng[NM_M_AENV_T] = 0.5f;   /* x1 */
+    inst->wave_tune_semis  = 0.0f;
+}
+
 static void load_preset(nm_instance_t *inst, int idx) {
     if (idx < 0 || idx >= NM_FACTORY_COUNT) return;
     inst->cur_preset = idx;
     inst->synth->setPanic();
+    reset_macros(inst);
     const nm_factory_preset_t *p = &NM_FACTORY_BANK[idx];
     for (int i = 1; i < NUMPARAM; i++) {          // skip UNUSED1(0)
         if (i == PANIC) continue;
@@ -478,9 +809,10 @@ static const char *kUiHierarchy =
 "{\"modes\":null,\"levels\":{"
  "\"root\":{\"label\":\"Noisemaker\","
    "\"list_param\":\"preset\",\"count_param\":\"preset_count\",\"name_param\":\"preset_name\","
-   "\"knobs\":[\"cutoff\",\"resonance\",\"filter_env\",\"aenv_a\",\"aenv_d\",\"aenv_s\",\"aenv_r\",\"volume\"],"
+   "\"knobs\":[\"wave\",\"tune2\",\"cutoff\",\"resonance\",\"filter_env\",\"fenv_time\",\"aenv_time\",\"volume\"],"
    "\"params\":["
      "{\"key\":\"editor\",\"label\":\"Editor\"},"
+     "{\"level\":\"macros\",\"label\":\"Macros\"},"
      "{\"level\":\"osc\",\"label\":\"Oscillators\"},"
      "{\"level\":\"filter\",\"label\":\"Filter\"},"
      "{\"level\":\"fenv\",\"label\":\"Filter Env\"},"
@@ -493,16 +825,18 @@ static const char *kUiHierarchy =
      "{\"level\":\"fx\",\"label\":\"Chorus / Reverb\"},"
      "{\"level\":\"delay\",\"label\":\"Delay\"}"
    "]},"
+ "\"macros\":{\"knobs\":[\"wave\",\"tune2\",\"cutoff\",\"resonance\",\"filter_env\",\"fenv_time\",\"aenv_time\",\"volume\"],"
+   "\"params\":[\"wave\",\"tune2\",\"fenv_time\",\"aenv_time\",\"cutoff\",\"resonance\",\"filter_env\",\"volume\"]},"
  "\"osc\":{\"knobs\":[\"osc1_wave\",\"osc2_wave\",\"osc1_vol\",\"osc2_vol\",\"osc3_vol\",\"detune\",\"osc1_pw\",\"ringmod\"],"
    "\"params\":[\"osc1_wave\",\"osc1_vol\",\"osc1_tune\",\"osc1_fine\",\"osc1_pw\",\"osc1_phase\","
      "\"osc2_wave\",\"osc2_vol\",\"osc2_tune\",\"osc2_fine\",\"osc2_phase\",\"osc2_fm\","
      "\"osc3_vol\",\"osc_sync\",\"ringmod\",\"detune\",\"osc_tune\",\"bitcrush\",\"vintage\"]},"
  "\"filter\":{\"knobs\":[\"filter_type\",\"cutoff\",\"resonance\",\"keyfollow\",\"filter_env\",\"filter_drive\",\"highpass\",\"vel_cut\"],"
    "\"params\":[\"filter_type\",\"cutoff\",\"resonance\",\"keyfollow\",\"filter_env\",\"filter_drive\",\"highpass\"]},"
- "\"fenv\":{\"knobs\":[\"fenv_a\",\"fenv_d\",\"fenv_s\",\"fenv_r\",\"filter_env\",\"vel_env\",\"cutoff\",\"resonance\"],"
-   "\"params\":[\"fenv_a\",\"fenv_d\",\"fenv_s\",\"fenv_r\"]},"
- "\"aenv\":{\"knobs\":[\"aenv_a\",\"aenv_d\",\"aenv_s\",\"aenv_r\",\"vel_vol\",\"volume\",\"cutoff\",\"resonance\"],"
-   "\"params\":[\"aenv_a\",\"aenv_d\",\"aenv_s\",\"aenv_r\"]},"
+ "\"fenv\":{\"knobs\":[\"fenv_a\",\"fenv_d\",\"fenv_s\",\"fenv_r\",\"fenv_time\",\"filter_env\",\"cutoff\",\"resonance\"],"
+   "\"params\":[\"fenv_a\",\"fenv_d\",\"fenv_s\",\"fenv_r\",\"fenv_time\"]},"
+ "\"aenv\":{\"knobs\":[\"aenv_a\",\"aenv_d\",\"aenv_s\",\"aenv_r\",\"aenv_time\",\"vel_vol\",\"volume\",\"cutoff\"],"
+   "\"params\":[\"aenv_a\",\"aenv_d\",\"aenv_s\",\"aenv_r\",\"aenv_time\"]},"
  "\"lfo1\":{\"knobs\":[\"lfo1_wave\",\"lfo1_rate\",\"lfo1_amount\",\"lfo1_dest\",\"lfo1_sync\",\"lfo1_keytrig\",\"lfo1_phase\",\"volume\"],"
    "\"params\":[\"lfo1_wave\",\"lfo1_rate\",\"lfo1_amount\",\"lfo1_dest\",\"lfo1_sync\",\"lfo1_keytrig\",\"lfo1_phase\"]},"
  "\"lfo2\":{\"knobs\":[\"lfo2_wave\",\"lfo2_rate\",\"lfo2_amount\",\"lfo2_dest\",\"lfo2_sync\",\"lfo2_keytrig\",\"lfo2_phase\",\"volume\"],"
@@ -581,7 +915,9 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->synth = new SynthEngine((float)MOVE_SAMPLE_RATE);
     inst->synth->setNumberOfVoices(1.0f);   // normalized -> combo 6
 
-    for (int i = 0; i < NUMPARAM; i++) inst->eng[i] = 0.0f;
+    for (int i = 0; i < NM_ENG_SLOTS; i++) inst->eng[i] = 0.0f;
+    /* Macro neutrals must be in place before any envelope value is applied. */
+    reset_macros(inst);
     for (int i = 0; i < DEFAULT_PATCH_COUNT; i++) {
         int idx = DEFAULT_PATCH[i].index;
         if (idx >= 0 && idx < NUMPARAM) apply_engine(inst, idx, DEFAULT_PATCH[i].value);

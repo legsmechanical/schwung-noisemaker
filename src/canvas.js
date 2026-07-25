@@ -704,10 +704,232 @@ const ENVDST    = ["Off","Filter","Osc1","Osc2","Osc1+2","FM","RingMod","Volume"
 const ENVDST_SQ = ["Off","Flt","Os1","Os2","O12","FM","Rng","Vol"];
 const ENVSPD    = ["x1","x2","x4","x8","x16","x32"];
 
+/* ---- Macro value HUDs ---------------------------------------------------
+ * Transient popup cards, the Echidna pattern: they surface only while their
+ * own knob is held (s.lastKnob), sitting on top of the grid, and vanish on
+ * release. The three macro knobs all send raw numbers that mean nothing on
+ * their own — "68" is not a waveform, a semitone count or a time ratio — so
+ * each card interprets its value. */
+
+/* MUST stay in sync with NM_WAVE_STOPS in src/dsp/noisemaker_plugin.cpp
+ * (name + display position of every anchor). `glyph` is 1-2 traces drawn
+ * side by side, the way Echidna's wave card pairs icons for its combos. */
+const WAVE_ANCHORS = [
+  { at:   1, name: "SINE",      glyph: ["sine"]         },
+  { at:  12, name: "FM",        glyph: ["fm"]           },
+  { at:  23, name: "TRIANGLE",  glyph: ["tri"]          },
+  { at:  34, name: "SAW",       glyph: ["saw"]          },
+  { at:  45, name: "DUAL SAW",  glyph: ["saw", "saw"]   },
+  { at:  56, name: "SQUARE",    glyph: ["square"]       },
+  { at:  67, name: "THIN PLS",  glyph: ["pulse"]        },
+  { at:  78, name: "PULSE+SAW", glyph: ["pulse", "saw"] },
+  { at:  89, name: "RING",      glyph: ["ring"]         },
+  { at: 100, name: "SUB BASS",  glyph: ["saw", "sub"]   },
+];
+
+/* Shapes the kit's shapeSample doesn't cover. `fm` draws a phase-modulated
+ * sine (the FM zone's actual mechanism), `ring` a carrier times a higher
+ * modulator, `pulse` a narrow-duty pulse, `sub` a square drawn at half the
+ * cycle count so it reads an octave down. */
+function waveSample(kind, t) {
+  const ph = t - Math.floor(t);
+  if (kind === "pulse") return ph < 0.18 ? 1 : -1;
+  if (kind === "fm")    return Math.sin(2 * Math.PI * t + 2.6 * Math.sin(2 * Math.PI * t * 2));
+  if (kind === "ring")  return Math.sin(2 * Math.PI * t) * Math.sin(2 * Math.PI * t * 5);
+  if (kind === "sub")   return ph < 0.5 ? 1 : -1;
+  return shapeSample(kind, t);
+}
+
+function waveTrace(ctx, x, y, w, h, kind) {
+  const baseY = y + Math.round(h / 2);
+  const amp = Math.max(2, Math.round(h / 2) - 1);
+  const cyc = kind === "sub" ? 1 : 2;          // sub = one cycle where others show two
+  let px = x, py = Math.round(baseY - waveSample(kind, 0) * amp);
+  for (let i = 1; i <= w; i++) {
+    const yy = Math.round(baseY - waveSample(kind, (i / w) * cyc) * amp);
+    plotLine(ctx, px, py, x + i, yy, 1);
+    px = x + i; py = yy;
+  }
+}
+
+/* One anchor's icon, centred on cx: a single trace, or two stacked half-height
+ * traces for the combo anchors (dual saw, pulse+saw, saw+sub). */
+function waveGlyph(ctx, cx, cy, w, h, glyph) {
+  const x = Math.round(cx - w / 2);
+  if (glyph.length === 1) return waveTrace(ctx, x, Math.round(cy - h / 2), w, h, glyph[0]);
+  const hh = Math.floor((h - 2) / 2);
+  waveTrace(ctx, x, Math.round(cy - h / 2),          w, hh, glyph[0]);
+  waveTrace(ctx, x, Math.round(cy - h / 2) + hh + 2, w, hh, glyph[1]);
+}
+
+/* tune2 rides a native 8-bit 0..255 wire rather than the config-wide 0..100,
+ * because the fine-detune windows need the resolution (see nm_tune2_semis in
+ * the wrapper). uni() would hardcode KIT_PARAM_MAX, so build the cell by hand
+ * — the kit reads cell.min/cell.max everywhere, so a wider cell is fine. */
+function tune2Cell() {
+  return { key: "tune2", label: "Tun2", kind: "unipolar", min: 0, max: 255, step: 1, sens: KIT_SENS };
+}
+
+/* Mirror of nm_tune2_semis() in src/dsp/noisemaker_plugin.cpp — MUST match. */
+function tune2Semis(raw) {
+  const CENTERS = [0, 128, 255], SEMIS = [0, 12, 24], DSTEPS = 8, DMAX = 0.2;
+  for (let i = 0; i < 3; i++) {
+    const steps = raw - CENTERS[i];
+    if (Math.abs(steps) <= DSTEPS) return SEMIS[i] + (steps / DSTEPS) * DMAX;
+  }
+  return Math.round((raw * 24) / 255);
+}
+
+/* Downward caret aimed at a position on the scale below it. */
+function hudCaret(ctx, cx, baseY) {
+  ctx.fillRect(cx - 2, baseY,     5, 1, 1);
+  ctx.fillRect(cx - 1, baseY + 1, 3, 1, 1);
+  ctx.setPixel(cx, baseY + 2, 1);
+}
+
+/* WAVE: the oscillator configuration you are on, drawn as its waveform —
+ * and, since the travel between two anchors is a level crossfade, the two
+ * bracketing icons with a track and caret showing how far across you are.
+ * Sits on a wider card than hudCard's: the icons are the whole point and
+ * they need the room (the same reason Echidna's wave card is near-fullscreen). */
+function waveHud(ctx, cells, s) {
+  const cell = s.lastKnob >= 0 ? cells[s.lastKnob] : null;
+  if (!cell || cell.key !== "wave") return;
+  const raw = getRaw(ctx, cell);
+
+  const x = 2, y = 10, w = ctx.width - 4, h = 51;
+  ctx.fillRect(x, y, w, h, 0);                   // card sits ON TOP of the grid
+  ctx.drawRect(x, y, w, h, 1);
+  ctx.print(x + 3, y + 2, "WAVE", 1);
+  const vtxt = raw <= 0 ? "OFF" : String(raw);
+  ctx.print(x + w - 3 - ctx.measureText(vtxt), y + 2, vtxt, 1);
+  ctx.fillRect(x + 1, y + 9, w - 2, 1, 1);
+
+  if (raw <= 0) {
+    const t = "PRESET OSC SETUP";
+    ctx.print(x + Math.round((w - ctx.measureText(t)) / 2), y + 24, t, 1);
+    return;
+  }
+
+  let i = 0;
+  while (i < WAVE_ANCHORS.length - 2 && raw > WAVE_ANCHORS[i + 1].at) i++;
+  const a = WAVE_ANCHORS[i], b = WAVE_ANCHORS[i + 1];
+  const span = b.at - a.at;
+  const f = span > 0 ? (raw - a.at) / span : 0;
+
+  const GW = 34, GH = 20;                        // icon box
+  const cy = y + 26;                             // icon row centre
+  const nameY = y + 40;                          // caption row
+
+  /* Sitting on an anchor: one icon, centred, named. */
+  if (f < 0.02 || f > 0.98) {
+    const an = f < 0.02 ? a : b;
+    waveGlyph(ctx, x + Math.round(w / 2), cy, GW + 14, GH, an.glyph);
+    ctx.print(x + Math.round((w - ctx.measureText(an.name)) / 2), nameY, an.name, 1);
+    return;
+  }
+
+  /* Between: both icons, track + caret in the gap, each name under its icon. */
+  const lcx = x + 4 + GW / 2, rcx = x + w - 4 - GW / 2;
+  waveGlyph(ctx, lcx, cy, GW, GH, a.glyph);
+  waveGlyph(ctx, rcx, cy, GW, GH, b.glyph);
+
+  const t0 = Math.round(lcx + GW / 2 + 5), t1 = Math.round(rcx - GW / 2 - 5);
+  plotLine(ctx, t0, cy, t1, cy, 1);
+  ctx.fillRect(t0, cy - 2, 1, 5, 1);             // bounded span, not a stray line
+  ctx.fillRect(t1, cy - 2, 1, 5, 1);
+  hudCaret(ctx, Math.round(t0 + f * (t1 - t0)), cy - 7);
+
+  /* Captions get the full half-width: "PULSE+SAW" is 9 chars and silently
+   * clipped to "PULSE+SA" at anything tighter. */
+  const capW = Math.floor(w / 2) - 5;
+  ctx.print(x + 3, nameY, fitText(ctx, a.name, capW), 1);
+  const bn = fitText(ctx, b.name, capW);
+  ctx.print(x + w - 3 - ctx.measureText(bn), nameY, bn, 1);
+}
+
+/* OSC2 PITCH: a bare 0..255 is meaningless for pitch, so interpret it — the
+ * interval by name, plus the detune in cents whenever the knob sits inside one
+ * of the fine windows around unison / +1 oct / +2 oct. */
+function tune2Hud(ctx, cells, s) {
+  const cell = s.lastKnob >= 0 ? cells[s.lastKnob] : null;
+  if (!cell || cell.key !== "tune2") return;
+  const raw = getRaw(ctx, cell);
+  const semi = tune2Semis(raw);
+  const st = Math.round(semi);
+  const cents = Math.round((semi - st) * 100);   // 0 outside the windows
+  const name = st === 0 ? "UNISON" : st === 12 ? "+1 OCT"
+             : st === 24 ? "+2 OCT" : "+" + st + " ST";
+  const body = hudCard(ctx, "OSC2 PITCH", String(raw));
+  ctx.print(body.x + 2, body.y, name, 1);
+  if (cents) {
+    const d = (cents > 0 ? "+" : "") + cents + "C";
+    ctx.print(body.x + body.w - 2 - ctx.measureText(d), body.y, d, 1);
+  }
+
+  const sx = body.x + 4, sw = body.w - 8, sy = body.y + body.h - 9;
+  ctx.fillRect(sx, sy, sw, 1, 1);
+  for (let i = 0; i <= 24; i++) {                // one tick per semitone
+    const oct = i % 12 === 0;
+    ctx.fillRect(Math.round(sx + (sw * i) / 24), sy - (oct ? 6 : 2), 1, oct ? 6 : 2, 1);
+  }
+  ctx.print(sx - 1, sy + 2, "0", 1);
+  ctx.print(sx + Math.round(sw / 2) - 1, sy + 2, "1", 1);
+  ctx.print(sx + sw - 3, sy + 2, "2", 1);
+  /* Caret tracks the CONTINUOUS semitone value, so it visibly creeps off an
+   * octave tick while you are inside a fine window. */
+  hudCaret(ctx, Math.round(sx + (sw * Math.max(0, Math.min(24, semi))) / 24), sy - 9);
+}
+
+/* FEG / AEG: these are envelope TIME MULTIPLIERS, so show the multiplier.
+ * MUST match nm_env_time_ratio() in the wrapper. */
+function envTimeHud(ctx, cells, s) {
+  const cell = s.lastKnob >= 0 ? cells[s.lastKnob] : null;
+  if (!cell || (cell.key !== "fenv_time" && cell.key !== "aenv_time")) return;
+  const raw = getRaw(ctx, cell);                 // 0..100, 50 = neutral
+  const body = hudCard(ctx, cell.key === "fenv_time" ? "FILTER TIME" : "AMP TIME", String(raw));
+
+  /* Shows the SHIFT, not a ratio: the macro drags the A/D/R sliders together
+   * (see nm_env_time_shift in the wrapper), so a multiplier readout would be
+   * a lie -- and would read "x6" on a gate envelope that cannot move at all. */
+  const d = Math.round((raw - 50) * 2);
+  ctx.print(body.x + 2, body.y, d === 0 ? "NEUTRAL" : (d > 0 ? "+" : "") + d, 1);
+  const tag = raw === 50 ? "" : (raw < 50 ? "SHORTER" : "LONGER");
+  if (tag) ctx.print(body.x + body.w - 2 - ctx.measureText(tag), body.y, tag, 1);
+
+  /* Centre-out bar: the detent is x1, either side is a constant ratio per
+   * degree of travel (the mapping is exponential about the centre). */
+  const sx = body.x + 3, sw = body.w - 6, sy = body.y + body.h - 6, mid = sx + Math.round(sw / 2);
+  ctx.drawRect(sx, sy, sw, 5, 1);
+  ctx.fillRect(mid, sy - 2, 1, 2, 1);            // centre detent mark
+  const px = Math.round(sx + (sw - 1) * (raw / 100));
+  if (px >= mid) ctx.fillRect(mid, sy + 1, Math.max(1, px - mid), 3, 1);
+  else           ctx.fillRect(px,  sy + 1, Math.max(1, mid - px), 3, 1);
+}
+
 const CONFIG = {
   name: "Noisemaker",
+  overlays: [waveHud, tune2Hud, envTimeHud],
 
   banks: [
+    /* ---- MACROS (first bank; the page you land on) ----
+     * wave / fenv_time / aenv_time are the wrapper's macro params (see the
+     * NM_M_* block in noisemaker_plugin.cpp); the rest are aliases of ordinary
+     * params that also live on their own pages, exactly as Echidna's Macros
+     * bank re-exposes the Typhon panel knobs.
+     *   Wave — 0 is an OFF detent (the preset's own osc setup stands), then 10
+     *          anchor configurations with a level crossfade between each pair.
+     *   Tun2 — osc2 pitch in semitones, UPWARD only 0..24 (Echidna's tune2
+     *          convention: 0 unison, 12 = +1 oct, 24 = +2). Adds to whatever
+     *          interval the Wave macro is applying.
+     *   FEG/AEG — envelope time scale, 50 = x1, x0.1 .. x6. Shown as bipolar
+     *          (the kit has no ratio cell): left = shorter, right = longer. */
+    { label: "Macros", knobs: [
+        uni("wave", "Wave"), tune2Cell(),
+        uni("cutoff", "Cut"), uni("resonance", "Res"),
+        uni("filter_env", "Cont"), bip("fenv_time", "FEG"), bip("aenv_time", "AEG"),
+        uni("volume", "Vol")] },
+
     /* ---- OSC 1 ---- */
     { label: "Osc 1", knobs: [
         wavesel("osc1_wave", "Wave", OSC1_WAVES, OSC1_SHAPES),
@@ -734,15 +956,22 @@ const CONFIG = {
       filterViz: { cell: 6, cutoffKey: "cutoff", resoKey: "resonance",
                    mode: { key: "filter_type", modes: FILT_MODES } } },
 
-    /* ---- Filter Env ---- */
+    /* ---- Filter Env (+ its time macro) ---- */
     { label: "Filter Env", env: true, knobs: [
-        fader("fenv_a", "A"), fader("fenv_d", "D"), fader("fenv_s", "S"), fader("fenv_r", "R")] },
+        fader("fenv_a", "A"), fader("fenv_d", "D"), fader("fenv_s", "S"), fader("fenv_r", "R"),
+        bip("fenv_time", "Time"), blank(), blank(), blank()] },
 
-    /* ---- Amp Env (+ Free/Env3, as TAL groups them) ---- */
+    /* ---- Amp Env (+ its time macro). Env3/Free moved to its own bank to
+     * make room: the time macro belongs next to the sliders it moves. ---- */
     { label: "Amp Env", env: true, knobs: [
         fader("aenv_a", "A"), fader("aenv_d", "D"), fader("aenv_s", "S"), fader("aenv_r", "R"),
-        uni("free_a", "E3A"), uni("free_d", "E3D"), bip("free_amt", "E3Amt"),
-        enumc("free_dest", "E3Ds", FDST, FDST_SQ)] },
+        bip("aenv_time", "Time"), blank(), blank(), blank()] },
+
+    /* ---- Env 3 (free AD envelope) ---- */
+    { label: "Env 3 (Free)", knobs: [
+        uni("free_a", "Atk"), uni("free_d", "Dec"), bip("free_amt", "Amt"),
+        enumc("free_dest", "Dest", FDST, FDST_SQ),
+        blank(), blank(), blank(), blank()] },
 
     /* ---- LFO 1 ---- */
     { label: "LFO 1", knobs: [
@@ -785,16 +1014,19 @@ const CONFIG = {
   ],
 
   sections: [
-    { name: "OSC 1", bank: 0 }, { name: "OSC 2", bank: 1 }, { name: "MASTER", bank: 2 },
-    { name: "FILTER", bank: 3 }, { name: "FILT ENV", bank: 4 }, { name: "AMP ENV", bank: 5 },
-    { name: "LFO 1", bank: 6 }, { name: "LFO 2", bank: 7 }, { name: "VOICE", bank: 8 },
-    { name: "REVERB", bank: 9 }, { name: "DELAY", bank: 10 }, { name: "ENV DRAW", bank: 11 },
+    { name: "MACROS", bank: 0 },
+    { name: "OSC 1", bank: 1 }, { name: "OSC 2", bank: 2 }, { name: "MASTER", bank: 3 },
+    { name: "FILTER", bank: 4 }, { name: "FILT ENV", bank: 5 }, { name: "AMP ENV", bank: 6 },
+    { name: "ENV 3", bank: 7 },
+    { name: "LFO 1", bank: 8 }, { name: "LFO 2", bank: 9 }, { name: "VOICE", bank: 10 },
+    { name: "REVERB", bank: 11 }, { name: "DELAY", bank: 12 }, { name: "ENV DRAW", bank: 13 },
   ],
 
-  icons: ["sawpulse","sawpulse","global","lp","envf","enva","sine","sine","bend","pan","routes","envf"],
+  icons: ["global","sawpulse","sawpulse","pulse","lp","envf","enva","env","sine","sine","bend","pan","routes","envf"],
 
   /* Off-device defaults only (previewer/tests); on device every read is live. */
   defaults: {
+    wave: 0, tune2: 0, fenv_time: 50, aenv_time: 50,
     osc1_wave: 0, osc1_tune: 50, osc1_fine: 50, osc1_phase: 0, osc1_pw: 50, osc1_vol: 80,
     osc2_wave: 0, osc2_tune: 50, osc2_fine: 50, osc2_phase: 0, osc2_fm: 0, osc2_vol: 0,
     osc3_vol: 0, volume: 50, highpass: 0, vintage: 0, detune: 20, ringmod: 0, osc_sync: 0, osc_tune: 50,
