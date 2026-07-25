@@ -35,4 +35,36 @@ done
 echo ""
 echo "=== Install Complete ==="
 echo "Installed to: $DEST"
-echo "Restart / reload the module to pick it up (swap synth out/in, or restart_move.sh)."
+
+# md5-verify every file. A truncated canvas.js from an interrupted scp once
+# caused a silent "failed to load canvas" with no other symptom.
+echo "Verifying..."
+fail=0
+for f in "dist/$ID/"*; do
+    fn="$(basename "$f")"
+    want="$(md5 -q "$f" 2>/dev/null || md5sum "$f" | cut -d' ' -f1)"
+    got="$(ssh "$MOVE_HOST" "md5sum '$DEST/$fn' | cut -d' ' -f1")"
+    if [ "$want" != "$got" ]; then echo "  MISMATCH: $fn"; fail=1; else echo "  ok  $fn"; fi
+done
+[ "$fail" = 0 ] || { echo "Deploy verification FAILED - not restarting."; exit 1; }
+
+# Force a re-dlopen. The host caches each slot module's dlopen handle BY PATH
+# (shadow_chain_mgmt.c early-returns on a same-path reload), so scp alone leaves
+# the OLD .so mapped -- and then NEW params simply do not exist: set_param
+# silently no-ops and the new keys are absent from chain_params. On device that
+# reads as "the new knobs do nothing" / "custom knob destinations are missing",
+# NOT as a load failure, which makes it easy to misdiagnose as a code bug.
+# You cannot infer load state from the host's process start time. Verify
+# behaviour, or just restart. SKIP_RESTART=1 to copy only (then swap the synth
+# out/in yourself, which also forces a re-dlopen).
+if [ "${SKIP_RESTART:-0}" = "1" ]; then
+    echo "SKIP_RESTART=1 - swap the synth out/in to load the new dsp.so."
+else
+    RESTART="$(dirname "$REPO_ROOT")/scripts/restart_move.sh"
+    if [ -x "$RESTART" ]; then
+        echo "Restarting Move host (no reboot) to force a re-dlopen..."
+        MOVE_HOST="root@${MOVE_HOST#*@}" "$RESTART"
+    else
+        echo "WARNING: $RESTART not found - swap the synth out/in to load the new dsp.so."
+    fi
+fi
