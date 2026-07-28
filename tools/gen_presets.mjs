@@ -22,11 +22,31 @@ import pads from "./presets/pads.mjs";
 import keys from "./presets/keys.mjs";
 import arps from "./presets/arps.mjs";
 import extra from "./presets/extra.mjs";
+import synthwave from "./presets/synthwave.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const outDir = process.argv[2] || join(here, "..", "dist", "presets", "noisemaker");
 
-const BANKS = [bass, leads, pads, keys, arps, extra];
+/* Two banks live in the same preset store, told apart by their name suffix
+ * ("JG" / "SW"). --bank picks which one this run emits; the default stays the
+ * original so nothing that used to call this script changes behaviour.
+ * --keep leaves existing .json in the output directory alone, which is how the
+ * two banks end up side by side on the device for A/B. */
+const argv = process.argv.slice(2);
+const bankArg = (() => { const i = argv.indexOf("--bank"); return i >= 0 ? argv[i + 1] : "jg"; })();
+const keep = argv.includes("--keep");
+const positional = argv.filter((a, i) =>
+  !a.startsWith("--") && argv[i - 1] !== "--bank");
+const outDir = positional[0] || join(here, "..", "dist", "presets", "noisemaker");
+
+const BANK_SETS = {
+  jg: [bass, leads, pads, keys, arps, extra],
+  sw: [synthwave],
+};
+const BANKS = BANK_SETS[bankArg.toLowerCase()];
+if (!BANKS) {
+  console.error(`unknown --bank ${bankArg} (have: ${Object.keys(BANK_SETS).join(", ")})`);
+  process.exit(1);
+}
 
 const KEYS = Object.keys(DEFAULTS);
 const presets = [];
@@ -58,6 +78,25 @@ for (const p of presets) {
   const wet = p.state.chorus1 || p.state.chorus2 || p.state.reverb_wet > 0 || p.state.delay_wet > 0;
   if (!wet) errs.push(`${p.name}: completely dry`);
 
+  /* The SW bank exists because the original one shipped 146 patches with the
+   * LFOs and both envelopes routed to None/Off — amounts set, destinations
+   * never assigned, so it LOOKED modulated in the state dict and was static.
+   * A destination with no depth (or depth with no destination) is the same
+   * bug wearing a different hat, so require both on at least one route. */
+  if (p.name.endsWith(" SW")) {
+    const routes = [
+      [p.state.lfo1_dest, p.state.lfo1_amount],
+      [p.state.lfo2_dest, p.state.lfo2_amount],
+      [p.state.free_dest, p.state.free_amt],
+      [p.state.env_dest,  p.state.env_amt],
+    ];
+    if (!routes.some(([dest, amt]) => dest > 0 && amt > 0))
+      errs.push(`${p.name}: no modulation routed (dest>0 AND amount>0 required in the SW bank)`);
+    for (const [i, [dest, amt]] of routes.entries())
+      if (dest > 0 && amt === 0)
+        errs.push(`${p.name}: mod route ${i + 1} has a destination but zero depth`);
+  }
+
   for (const [k, v] of Object.entries(p.state)) {
     if (typeof v !== "number" || !Number.isFinite(v)) errs.push(`${p.name}: ${k} = ${v}`);
   }
@@ -68,7 +107,7 @@ if (errs.length) {
 }
 
 mkdirSync(outDir, { recursive: true });
-if (existsSync(outDir))
+if (existsSync(outDir) && !keep)
   for (const f of readdirSync(outDir)) if (f.endsWith(".json")) unlinkSync(join(outDir, f));
 
 for (const p of presets) {

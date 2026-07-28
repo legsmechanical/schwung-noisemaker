@@ -130,9 +130,16 @@ export function wrap(name, state) {
  * spec. That is for patches where I am guessing at the taste call and want
  * Josh choosing between real alternatives rather than accepting my first one.
  *
- * Variants inherit the spec's fx layers unless they supply their own `fx`. */
+ * Variants inherit the spec's fx layers unless they supply their own `fx`.
+ *
+ * `spec.tag` replaces the trailing "JG" and is how a second bank coexists with
+ * the first in the same preset store. It is a SUFFIX rather than a prefix on
+ * purpose: both autogain_presets.mjs and verify_presets.mjs derive the render
+ * plan from the FIRST token of the name (`planFor`), so a "SW BS Foo" would
+ * silently be auditioned with the generic lead plan instead of the bass one. */
 export function expand(spec) {
   const out = [];
+  const tag = spec.tag || "JG";
   const mk = (name, extraFx, extraP) => {
     const s = { ...DEFAULTS };
     for (const layer of (extraFx || spec.fx || [])) Object.assign(s, layer);
@@ -140,10 +147,10 @@ export function expand(spec) {
     out.push(wrap(name, s));
   };
   if (!spec.vars || !spec.vars.length) {
-    mk(`${spec.cat} ${spec.name} JG`);
+    mk(`${spec.cat} ${spec.name} ${tag}`);
   } else {
     spec.vars.forEach((v, i) => {
-      mk(`${spec.cat} ${spec.name} ${i + 1} JG`, v.fx, v.p);
+      mk(`${spec.cat} ${spec.name} ${i + 1} ${tag}`, v.fx, v.p);
     });
   }
   return out;
