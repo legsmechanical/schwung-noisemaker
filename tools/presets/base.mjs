@@ -63,7 +63,7 @@ export const DEFAULTS = {
   chorus1: 0, chorus2: 0,
   reverb_wet: 0, reverb_decay: 45, reverb_pre: 10, reverb_hi: 70, reverb_lo: 10,
   delay_wet: 0, delay_time: 35, delay_sync: 0, delay_fac_l: 0, delay_fac_r: 0,
-  delay_fb: 25, delay_hi: 60, delay_lo: 20,
+  delay_fb: 40, delay_hi: 60, delay_lo: 20,
 
   env_amt: 0, env_speed: 0, env_dest: 0,
 };
@@ -89,18 +89,25 @@ export const FX = {
   /* Dark smear for darkwave pads — heavy high cut, long tail. */
   murk:        { reverb_wet: 48, reverb_decay: 80, reverb_pre: 14, reverb_hi: 34, reverb_lo: 26 },
 
-  /* Delays. Sync'd for anything rhythmic; free-time for pads and drones. */
-  slap:        { delay_wet: 20, delay_time: 14, delay_fb: 8,  delay_sync: 0, delay_hi: 52, delay_lo: 26 },
-  eighth:      { delay_wet: 30, delay_time: 25, delay_fb: 34, delay_sync: 1, delay_hi: 54, delay_lo: 24 },
-  dotted:      { delay_wet: 34, delay_time: 38, delay_fb: 42, delay_sync: 1, delay_hi: 50, delay_lo: 26 },
-  quarter:     { delay_wet: 32, delay_time: 50, delay_fb: 38, delay_sync: 1, delay_hi: 46, delay_lo: 28 },
+  /* Delays. Sync'd for anything rhythmic; free-time for pads and drones.
+   * delay_fb is the LOOP GAIN x100 (see K_FBGAIN in the wrapper): at 100 the
+   * delay line stops decaying on its own, so everything here stays well under
+   * it. The repeat counts in the comments are upper bounds to -60 dB — the
+   * high cut sits inside the loop and shortens them further.
+   * These were authored against the OLD raw-knob wire, where 34-52 read as
+   * "moderate" but was really gain 0.97-1.00 — i.e. tails of hundreds of
+   * repeats, and `tape` was over unity and never decayed at all. */
+  slap:        { delay_wet: 20, delay_time: 14, delay_fb: 25, delay_sync: 0, delay_hi: 52, delay_lo: 26 }, // ~5
+  eighth:      { delay_wet: 30, delay_time: 25, delay_fb: 42, delay_sync: 1, delay_hi: 54, delay_lo: 24 }, // ~7
+  dotted:      { delay_wet: 34, delay_time: 38, delay_fb: 48, delay_sync: 1, delay_hi: 50, delay_lo: 26 }, // ~8
+  quarter:     { delay_wet: 32, delay_time: 50, delay_fb: 45, delay_sync: 1, delay_hi: 46, delay_lo: 28 }, // ~9
   /* Ping-pong: the 2x factors offset the two channels. */
-  pingpong:    { delay_wet: 34, delay_time: 25, delay_fb: 40, delay_sync: 1, delay_fac_l: 1, delay_hi: 52, delay_lo: 24 },
+  pingpong:    { delay_wet: 34, delay_time: 25, delay_fb: 45, delay_sync: 1, delay_fac_l: 1, delay_hi: 52, delay_lo: 24 }, // ~9
   /* Long, dark, degraded — dub/industrial. delay_fac_l offsets the left
    * channel so the repeats spread: stereo width in this engine comes from
    * chorus or an L/R delay offset, and a centred delay plus a short reverb
    * measures as literally mono. */
-  tape:        { delay_wet: 36, delay_time: 44, delay_fb: 52, delay_sync: 0, delay_fac_l: 1, delay_hi: 34, delay_lo: 30 },
+  tape:        { delay_wet: 36, delay_time: 44, delay_fb: 62, delay_sync: 0, delay_fac_l: 1, delay_hi: 34, delay_lo: 30 }, // ~14
 };
 
 /* Merge a preset spec down to a full state dict. */

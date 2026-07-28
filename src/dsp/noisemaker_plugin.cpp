@@ -87,8 +87,72 @@ enum ParamKind {
     K_TOGGLE,   // norm 0/1    <-> display 0/1
     K_INT,      // combo count <-> display imin..imax (e.g. voices 1..6)
     K_ENUM,     // combo       <-> display index 0..n_opts-1 (calcComboBoxValue)
-    K_LFOWAVE   // LFO waveform: engine (int)(norm*5) -> 0..5; NOT the combo formula
+    K_LFOWAVE,  // LFO waveform: engine (int)(norm*5) -> 0..5; NOT the combo formula
+    K_FBGAIN    // delay feedback: display = LOOP GAIN x100 (0..200). See below.
 };
+
+/* ---- K_FBGAIN: delay feedback, displayed as loop gain -------------------
+ * TAL's delay feedback param is not a gain -- AudioUtils::getDelayFeedback
+ * warps the raw 0..1 knob through
+ *
+ *     g(k) = 1 + (2k - 1)^3
+ *
+ * which is savagely steep around the middle: k=0.25 is already g=0.875
+ * (~52 repeats to -60 dB before the loop EQ, ~17 after), k=0.40 is g=0.992,
+ * and the entire top half k>=0.5 is g>=1.0. A linear 0..100 % readout over
+ * that curve is a lie: everything musically useful lives in the bottom fifth
+ * of the knob, which is exactly the "long tail at low feedback" complaint.
+ * TAL's own GUI dodges this by printing getDelayFeedback(value) -- the
+ * coefficient -- next to the knob rather than the knob position.
+ *
+ * Note that g >= 1 is NOT automatically a runaway: TalEq sits inside the
+ * feedback loop and costs real level per pass (measured ~-1.8 dB/pass with
+ * both cuts wide open), so the tail keeps decaying past g=1.0 and only crosses
+ * into true sustain around g=1.03; any high cut pushes that past g=1.4. The
+ * top of the range is therefore usable, not merely broken -- it is where you
+ * pay back the loop EQ. It is still far too much of the knob.
+ *
+ * So we invert the warp at the DISPLAY BOUNDARY ONLY and expose the loop gain
+ * itself: display d (0..200) = g x 100, engine value
+ *
+ *     k(g) = (1 + cbrt(g - 1)) / 2
+ *
+ * which is an exact bijection over the engine's full k=0..1 / g=0..2 range.
+ * Consequences worth knowing:
+ *   - 0..99 always decays (the delay line is contractive before the EQ even
+ *     gets a say). 100+ hands the outcome to the high cut, per the note above.
+ *     The self-oscillating region is still reachable -- 5 TAL factory presets
+ *     live there, "PD Bionic Pad TAL" at g=1.31 -- but it is no longer half
+ *     the travel.
+ *   - The DSP is untouched: this is a control-law change, not an engine one.
+ *     The engine still sees exactly the k it always did.
+ *   - load_preset() raw-applies factory programData and never goes through
+ *     disp_to_engine(), so the 256 TAL presets keep their exact TAL feedback.
+ *     They simply now READ OUT in gain space like everything else.
+ * This is a deliberate departure from TAL's knob taper; the reachable sound
+ * range is identical. */
+#define NM_FB_DISP_MAX 200
+
+static inline float nm_fb_disp_to_norm(float disp) {
+    float g = disp / 100.0f;                       // display is gain x100
+    if (g < 0.0f) g = 0.0f;
+    if (g > 2.0f) g = 2.0f;
+    float k = (1.0f + cbrtf(g - 1.0f)) * 0.5f;
+    if (k < 0.0f) k = 0.0f;
+    if (k > 1.0f) k = 1.0f;
+    return k;
+}
+
+static inline int nm_fb_norm_to_disp(float k) {
+    if (k < 0.0f) k = 0.0f;
+    if (k > 1.0f) k = 1.0f;
+    float t = 2.0f * k - 1.0f;
+    float g = 1.0f + t * t * t;                    // TAL's getDelayFeedback
+    int d = (int)lroundf(g * 100.0f);
+    if (d < 0) d = 0;
+    if (d > NM_FB_DISP_MAX) d = NM_FB_DISP_MAX;
+    return d;
+}
 
 #define MAX_ENUM_OPTS 12
 
@@ -252,7 +316,7 @@ static const param_def_t PARAMS[] = {
   { "delay_sync",    "Delay Sync",    DELAYSYNC,     K_TOGGLE, 0,0, 0,{0} },
   { "delay_fac_l",   "Delay 2x L",    DELAYFACTORL,  K_TOGGLE, 0,0, 0,{0} },
   { "delay_fac_r",   "Delay 2x R",    DELAYFACTORR,  K_TOGGLE, 0,0, 0,{0} },
-  { "delay_fb",      "Delay Feedbk",  DELAYFEEDBACK, K_PCT,    0,0, 0,{0} },
+  { "delay_fb",      "Delay Feedbk",  DELAYFEEDBACK, K_FBGAIN, 0,0, 0,{0} },
   { "delay_hi",      "Delay HiCut",   DELAYHIGHSHELF,K_PCT,    0,0, 0,{0} },
   { "delay_lo",      "Delay LoCut",   DELAYLOWSHELF, K_PCT,    0,0, 0,{0} },
 
@@ -706,6 +770,7 @@ static float disp_to_engine(const param_def_t *p, const char *val) {
             if (iv > p->n_opts - 1) iv = p->n_opts - 1;
             return (float)iv / (float)(p->n_opts - 1);
         }
+        case K_FBGAIN:  return nm_fb_disp_to_norm((float)atof(val));   // gain x100 -> norm
     }
     return 0.0f;
 }
@@ -724,6 +789,7 @@ static void engine_to_disp(const param_def_t *p, float norm, char *buf, int len)
             snprintf(buf, len, "%d", idx);
             break;
         }
+        case K_FBGAIN:  snprintf(buf, len, "%d", nm_fb_norm_to_disp(norm)); break;
         default:        snprintf(buf, len, "0"); break;
     }
 }
@@ -872,6 +938,11 @@ static int build_chain_params(char *buf, int len) {
                 n += snprintf(buf + n, len - n,
                     "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"int\",\"min\":0,\"max\":100,\"step\":1}",
                     p->key, p->name);
+                break;
+            case K_FBGAIN:   /* loop gain x100; 100 = unity = never decays */
+                n += snprintf(buf + n, len - n,
+                    "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"int\",\"min\":0,\"max\":%d,\"step\":1,\"unit\":\"%%\"}",
+                    p->key, p->name, NM_FB_DISP_MAX);
                 break;
             case K_TOGGLE:
                 n += snprintf(buf + n, len - n,

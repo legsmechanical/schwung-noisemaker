@@ -9,7 +9,9 @@
  *
  * Wire contract (src/dsp/noisemaker_plugin.cpp): all params are native ints —
  * continuous 0..100 (K_PCT / K_BIPOLAR centered at 50), enums exchange the
- * OPTION INDEX both ways. No per-cell codecs needed. */
+ * OPTION INDEX both ways. No per-cell codecs needed. Two params ride wider
+ * wires and so build their cells by hand: tune2 (0..255) and delay_fb
+ * (0..200 = loop gain x100, K_FBGAIN). */
 
 KIT_PARAM_MAX = 100;
 
@@ -115,6 +117,16 @@ function waveGlyph(ctx, cx, cy, w, h, glyph) {
  * — the kit reads cell.min/cell.max everywhere, so a wider cell is fine. */
 function tune2Cell() {
   return { key: "tune2", label: "Tun2", kind: "unipolar", min: 0, max: 255, step: 1, sens: KIT_SENS };
+}
+
+/* delay_fb rides a 0..200 wire, not the config-wide 0..100: the wrapper's
+ * K_FBGAIN exposes the delay's LOOP GAIN x100 rather than TAL's raw knob
+ * position, so 0..99 is guaranteed to decay and 100..200 reaches the blooming
+ * / self-oscillating region TAL's factory FX patches use. See the K_FBGAIN
+ * block in src/dsp/noisemaker_plugin.cpp for the whole story.
+ * Hand-built for the same reason as tune2Cell: uni() hardcodes KIT_PARAM_MAX. */
+function delayFbCell() {
+  return { key: "delay_fb", label: "Fbk", kind: "unipolar", min: 0, max: 200, step: 1, sens: KIT_SENS };
 }
 
 /* Mirror of nm_tune2_semis() in src/dsp/noisemaker_plugin.cpp — MUST match. */
@@ -254,9 +266,51 @@ function envTimeHud(ctx, cells, s) {
   else           ctx.fillRect(px,  sy + 1, Math.max(1, mid - px), 3, 1);
 }
 
+/* DELAY FBK: the knob is already the loop gain (K_FBGAIN in the wrapper), but
+ * a gain only means something once you know how long it rings. Below 100 the
+ * delay line is contractive on its own, so the tail is guaranteed to end and
+ * we can bound the repeat count. At 100 and above it is not, and what happens
+ * next is entirely down to the high cut — TalEq sits INSIDE the feedback loop
+ * and its insertion loss is what actually kills the tail up there.
+ *
+ * Measured (off-device, cuts wide open): the tail keeps decaying past a
+ * coefficient of 1.0 and only crosses into true sustain around 1.03; engaging
+ * the high cut pushes that well past 1.4. So the readout deliberately does NOT
+ * promise "infinite" at 100 — it names the high cut as the deciding control,
+ * which is both true and the thing you would reach for. */
+function delayFbHud(ctx, cells, s) {
+  const cell = s.lastKnob >= 0 ? cells[s.lastKnob] : null;
+  if (!cell || cell.key !== "delay_fb") return;
+  const raw = getRaw(ctx, cell);                 // 0..200 = loop gain x100
+  const g = raw / 100;
+  const body = hudCard(ctx, "DELAY FBK", String(raw));
+
+  ctx.print(body.x + 2, body.y, "X" + g.toFixed(2), 1);
+  /* -60 dB is the usual "gone" threshold. This is an UPPER BOUND: it counts
+   * the delay line's own loss only, so the cuts can only make it shorter. */
+  let tag;
+  if (g <= 0)     tag = "SILENT";
+  else if (g >= 1) tag = "HI CUT ONLY";
+  else {
+    /* "RPTS", not "REPEATS": at three digits the long form runs into the
+     * gain on the left (the previewer's 5x5 font is wider than the device's,
+     * so fitting there is the conservative check). */
+    const n = Math.round(60 / (-20 * Math.log(g) / Math.LN10));
+    tag = "MAX " + (n > 999 ? "999" : String(n)) + " RPTS";
+  }
+  ctx.print(body.x + body.w - 2 - ctx.measureText(tag), body.y, tag, 1);
+
+  const sx = body.x + 3, sw = body.w - 6, sy = body.y + body.h - 6;
+  ctx.drawRect(sx, sy, sw, 5, 1);
+  const unity = Math.round(sx + (sw - 1) * 0.5);
+  ctx.fillRect(unity, sy - 3, 1, 3, 1);          // where the line stops decaying alone
+  const px = Math.round(sx + (sw - 1) * (raw / 200));
+  ctx.fillRect(sx + 1, sy + 1, Math.max(1, px - sx), 3, 1);
+}
+
 const CONFIG = {
   name: "Noisemaker",
-  overlays: [waveHud, tune2Hud, envTimeHud],
+  overlays: [waveHud, tune2Hud, envTimeHud, delayFbHud],
 
   banks: [
     /* ---- MACROS (first bank; the page you land on) ----
@@ -349,7 +403,7 @@ const CONFIG = {
 
     /* ---- Delay ---- */
     { label: "Delay", knobs: [
-        uni("delay_wet", "Wet"), uni("delay_time", "Time"), uni("delay_fb", "Fbk"),
+        uni("delay_wet", "Wet"), uni("delay_time", "Time"), delayFbCell(),
         tog("delay_sync", "Sync"), tog("delay_fac_l", "2xL"), tog("delay_fac_r", "2xR"),
         uni("delay_hi", "HiCt"), uni("delay_lo", "LoCt")] },
 
@@ -384,7 +438,7 @@ const CONFIG = {
     lfo2_wave: 0, lfo2_rate: 30, lfo2_amount: 0, lfo2_phase: 0, lfo2_dest: 0, lfo2_sync: 0, lfo2_keytrig: 0,
     voices: 6, portamento: 0, porta_mode: 0, vel_vol: 0, vel_env: 0, vel_cut: 0, pw_cutoff: 0, pw_pitch: 20,
     chorus1: 0, chorus2: 0, bitcrush: 0, reverb_wet: 0, reverb_decay: 0, reverb_pre: 0, reverb_hi: 100, reverb_lo: 0,
-    delay_wet: 0, delay_time: 30, delay_fb: 0, delay_sync: 0, delay_fac_l: 0, delay_fac_r: 0, delay_hi: 100, delay_lo: 0,
+    delay_wet: 0, delay_time: 30, delay_fb: 40, delay_sync: 0, delay_fac_l: 0, delay_fac_r: 0, delay_hi: 100, delay_lo: 0,
     env_dest: 0, env_amt: 0, env_speed: 0,
   },
 
