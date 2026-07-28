@@ -64,25 +64,83 @@ static bool writeWav(const char *path, const std::vector<int16_t> &s) {
     return true;
 }
 
-/* Goertzel-free crude spectral centroid via zero-crossing-weighted band energy:
- * a cheap DFT over log-spaced bins is plenty to rank "dull" vs "bright". */
-static double spectralCentroid(const std::vector<int16_t> &s, int from, int to) {
-    const int N = 4096;
-    if (to - from < N * 2) return 0.0;
-    int mid = from + (to - from) / 2;
-    double num = 0, den = 0;
-    for (int k = 2; k < 512; k += 2) {
-        double f = (double)k * SR / (2.0 * N);
-        double re = 0, im = 0;
-        for (int n = 0; n < N; n++) {
-            double x = s[(mid + n) * 2] / 32768.0;
-            double th = 2.0 * M_PI * k * n / (2.0 * N);
-            re += x * cos(th); im -= x * sin(th);
-        }
-        double mag = sqrt(re * re + im * im);
-        num += f * mag; den += mag;
+/* Spectral centroid + high-frequency energy share, over the LOUDEST window of
+ * the render.
+ *
+ * The previous version of this was blind in both axes and quietly reported
+ * "0 Hz (dark)" for most of the bank:
+ *   - it analysed a fixed point halfway through the hold, which for any
+ *     plucked patch (aenv_s = 0) is silence -- so `den` underflowed and it
+ *     returned 0, which reads as "very dark" rather than "measured nothing";
+ *   - its highest bin was k=510 of a 4096-point transform = ~2.7 kHz, so
+ *     everything that actually distinguishes bright from dull was above its
+ *     ceiling and it could not have ranked brightness even on a sustained note.
+ * Both faults push the answer the same way -- toward "dark" -- which is exactly
+ * the kind of metric that confirms whatever you already suspected.
+ *
+ * Now: find the highest-energy N-sample window anywhere in the render, Hann it,
+ * and take a full radix-2 FFT to Nyquist. Returns the centroid in Hz and, via
+ * hfShare, the fraction of magnitude above 2 kHz (which is what "sparkle"
+ * actually means here, and is far less sensitive to the fundamental than the
+ * centroid is). Returns 0 only when the render is genuinely silent. */
+static void fftRadix2(std::vector<double> &re, std::vector<double> &im) {
+    const size_t n = re.size();
+    for (size_t i = 1, j = 0; i < n; i++) {         // bit-reversal permutation
+        size_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { std::swap(re[i], re[j]); std::swap(im[i], im[j]); }
     }
-    return den > 1e-9 ? num / den : 0.0;
+    for (size_t len = 2; len <= n; len <<= 1) {
+        double ang = -2.0 * M_PI / (double)len;
+        double wr = cos(ang), wi = sin(ang);
+        for (size_t i = 0; i < n; i += len) {
+            double cr = 1, ci = 0;
+            for (size_t k = 0; k < len / 2; k++) {
+                double ur = re[i + k],           ui = im[i + k];
+                double vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+                double vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+                re[i + k] = ur + vr;             im[i + k] = ui + vi;
+                re[i + k + len / 2] = ur - vr;   im[i + k + len / 2] = ui - vi;
+                double ncr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;          cr = ncr;
+            }
+        }
+    }
+}
+
+static double spectralCentroid(const std::vector<int16_t> &s, double *hfShare) {
+    const int N = 4096;
+    const size_t frames = s.size() / 2;
+    if (hfShare) *hfShare = 0.0;
+    if (frames < (size_t)N) return 0.0;
+
+    /* Loudest window, hopped by N/2 -- no assumption about where the sound is. */
+    size_t best = 0; double bestE = -1;
+    for (size_t off = 0; off + N <= frames; off += N / 2) {
+        double e = 0;
+        for (int n = 0; n < N; n++) { double x = s[(off + n) * 2] / 32768.0; e += x * x; }
+        if (e > bestE) { bestE = e; best = off; }
+    }
+    if (bestE <= 1e-12) return 0.0;                 // genuinely silent
+
+    std::vector<double> re(N), im(N, 0.0);
+    for (int n = 0; n < N; n++) {
+        double w = 0.5 - 0.5 * cos(2.0 * M_PI * n / (N - 1));   // Hann
+        re[n] = (s[(best + n) * 2] / 32768.0) * w;
+    }
+    fftRadix2(re, im);
+
+    double num = 0, den = 0, hf = 0;
+    for (int k = 1; k < N / 2; k++) {               // skip DC
+        double f = (double)k * SR / N;
+        double mag = sqrt(re[k] * re[k] + im[k] * im[k]);
+        num += f * mag; den += mag;
+        if (f >= 2000.0) hf += mag;
+    }
+    if (den <= 1e-12) return 0.0;
+    if (hfShare) *hfShare = hf / den;
+    return num / den;
 }
 
 int main(int argc, char **argv) {
@@ -190,7 +248,8 @@ int main(int argc, char **argv) {
                 if (env[i] <= 0.1 * atOff) { relMs = (i - offAt / (double)WIN) * 5.0; break; }
         }
 
-        double cen = spectralCentroid(out, (int)(onAt + SR * 0.2), (int)offAt);
+        double hfShare = 0;
+        double cen = spectralCentroid(out, &hfShare);
         double width = sumDiff / (cnt / 2.0);
 
         printf("peak      %.3f  (%.1f dBFS)%s\n", peak, 20 * log10(peak > 1e-9 ? peak : 1e-9),
@@ -199,6 +258,8 @@ int main(int argc, char **argv) {
         printf("audible   %s\n", peak > 0.005 ? "yes" : "NO -- SILENT");
         printf("attack    %.0f ms   release %.0f ms\n", atkMs, relMs);
         printf("centroid  %.0f Hz   %s\n", cen, cen < 400 ? "(dark)" : cen < 1500 ? "(mid)" : "(bright)");
+        printf("hf>2k     %.3f  %s\n", hfShare,
+               hfShare < 0.05 ? "(no sparkle)" : hfShare < 0.15 ? "(some)" : "(bright top)");
         printf("width     %.4f %s\n", width, width < 0.001 ? "(MONO)" : "(stereo)");
     }
 
