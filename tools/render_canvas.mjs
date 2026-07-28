@@ -91,7 +91,10 @@ function renderPage(pageIdx, lastKnob = -1, over = null) {
   globalThis.__over = over;
   const ctx = makeCtx();
   ed.draw(ctx);                 // first frame installs cache
-  ctx.state.init = true; ctx.state.page = pageIdx; ctx.state.lastKnob = lastKnob; ctx.state.accum = [0,0,0,0,0,0,0,0];
+  /* The kit's state field is `bank` (readState in canvas.js). This said
+   * `page` — a field nothing reads — so every frame silently rendered bank 0
+   * and the whole preview was 14 copies of the Macros page. */
+  ctx.state.init = true; ctx.state.bank = pageIdx; ctx.state.lastKnob = lastKnob; ctx.state.accum = [0,0,0,0,0,0,0,0];
   ctx._pcache = {};
   ctx.fb.fill(0);
   ed.draw(ctx);
@@ -112,6 +115,12 @@ frames.push({ fb: renderPage(0, 1, { tune2: 5 }),   name: "HUD: OSC2 PITCH raw 5
 frames.push({ fb: renderPage(0, 1, { tune2: 74 }),  name: "HUD: OSC2 PITCH raw 74 = +7 ST" });
 frames.push({ fb: renderPage(0, 1, { tune2: 132 }), name: "HUD: OSC2 PITCH raw 132 = +1 OCT +10C" });
 frames.push({ fb: renderPage(0, 5, { fenv_time: 68 }),  name: "HUD: FILTER TIME = x1.91" });
+
+/* Delay feedback HUD (bank 12 = Delay; knob 2 = Fbk, the 0..200 gain wire). */
+frames.push({ fb: renderPage(12, 2, { delay_fb: 25 }),  name: "HUD: DELAY FBK x0.25 (short)" });
+frames.push({ fb: renderPage(12, 2, { delay_fb: 62 }),  name: "HUD: DELAY FBK x0.62 (the 'tape' flavour)" });
+frames.push({ fb: renderPage(12, 2, { delay_fb: 99 }),  name: "HUD: DELAY FBK x0.99 (just short of no-decay)" });
+frames.push({ fb: renderPage(12, 2, { delay_fb: 131 }), name: "HUD: DELAY FBK x1.31 ('PD Bionic Pad TAL')" });
 
 /* ---- compose stacked, scaled ---- */
 const SCALE = 3, GAP = 6;
