@@ -84,9 +84,37 @@ static void write_preset(const char *path, const char *name, float cutoff,
     fclose(f);
 }
 
+/* ⚠ These mirror what src/shadow/shadow_ui.js ACTUALLY does with items_param,
+ * which is the contract that matters -- not whatever shape looks reasonable:
+ *
+ *     label: item.label || item.name || `Item ${item.index}`
+ *     ...on click: setSlotParam(select_param, String(item.index))
+ *
+ * The first cut of bank_list emitted a plain array of strings. It parsed, it
+ * round-tripped through this test's own helpers, and on the device every row
+ * read "Item undefined" and every click selected index 0. A test that asserts
+ * the format you invented cannot catch that; assert the CONSUMER's shape. */
 static bool listHas(const std::string &json, const char *name) {
-    std::string needle = std::string("\"") + name + "\"";
+    std::string needle = std::string("\"name\":\"") + name + "\"";
     return json.find(needle) != std::string::npos;
+}
+
+/* Every entry must carry BOTH a usable label field and its own index. */
+static bool listEntriesWellFormed(const std::string &j, int expectCount) {
+    int seen = 0;
+    size_t pos = 0;
+    while ((pos = j.find("{\"index\":", pos)) != std::string::npos) {
+        size_t idxAt = pos + 9;
+        int idx = atoi(j.c_str() + idxAt);
+        if (idx != seen) return false;                 /* index == position */
+        size_t nameAt = j.find("\"name\":\"", pos);
+        if (nameAt == std::string::npos) return false; /* no label source */
+        size_t close = j.find('}', pos);
+        if (close == std::string::npos || nameAt > close) return false;
+        seen++;
+        pos = close;
+    }
+    return seen == expectCount;
 }
 
 int main(int argc, char **argv) {
@@ -102,7 +130,8 @@ int main(int argc, char **argv) {
     if (!inst) return 1;
 
     printf("\nTest 1: an empty root is Factory-only\n");
-    check(G(inst, "bank_list") == "[\"Factory\"]", "bank_list is just Factory");
+    check(G(inst, "bank_list") == "[{\"index\":0,\"name\":\"Factory\"}]",
+          "bank_list is just Factory, in the host's items_param object shape");
     check(G(inst, "bank_index") == "0", "Factory is selected");
     check(atoi(G(inst, "preset_count").c_str()) == NM_FACTORY_COUNT,
           "preset_count is the factory count");
@@ -127,6 +156,8 @@ int main(int argc, char **argv) {
     check(atoi(G(inst, "bank_count").c_str()) == 3, "three banks");
     check(list.find("Alpha") < list.find("Zeta"), "imported banks are sorted");
     check(list.find("Factory") < list.find("Alpha"), "Factory is pinned first");
+    check(listEntriesWellFormed(list, 3),
+          "every entry has a name AND an index matching its position");
 
     printf("\nTest 3: selecting a bank, recursively gathering subfolders\n");
     S(inst, "bank_index", "1");                       /* Alpha */
@@ -180,6 +211,8 @@ int main(int argc, char **argv) {
     /* A folder name with a quote must not break the JSON the UI parses. */
     check(list.find("Quote\\\"Bank") != std::string::npos,
           "a quote in a folder name is escaped in bank_list");
+    check(listEntriesWellFormed(list, atoi(G(inst, "bank_count").c_str())),
+          "entries stay well-formed with hostile folder names");
     int braces = 0;
     for (size_t i = 0; i < list.size(); i++)
         if (list[i] == '"' && (i == 0 || list[i-1] != '\\')) braces++;

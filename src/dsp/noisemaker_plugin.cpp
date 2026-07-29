@@ -1523,17 +1523,23 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
      * no way for the list to be stale. */
     if (strcmp(key, "bank_list") == 0) {
         nm_scan_banks(inst);
+        /* ⚠ The host's contract for an items_param level is an array of
+         * OBJECTS, not of strings. shadow_ui.js does
+         *     label: item.label || item.name || `Item ${item.index}`
+         * and, on click, writes String(item.index) to select_param. An array
+         * of plain strings therefore renders every row as "Item undefined"
+         * AND selects index "undefined" -> 0. Both fields are required. */
         int n = snprintf(buf, buf_len, "[");
-        for (int i = 0; i < inst->bank_count && n < buf_len - 80; i++) {
+        for (int i = 0; i < inst->bank_count && n < buf_len - 96; i++) {
             const char *nm = inst->banks[i].name[0] ? inst->banks[i].name : "(loose)";
-            n += snprintf(buf + n, buf_len - n, "%s\"", i ? "," : "");
+            n += snprintf(buf + n, buf_len - n, "%s{\"index\":%d,\"name\":\"", i ? "," : "", i);
             /* Folder names are user data: escape what would break the JSON. */
             for (const char *c = nm; *c && n < buf_len - 8; c++) {
                 if (*c == '"' || *c == '\\') n += snprintf(buf + n, buf_len - n, "\\%c", *c);
                 else if ((unsigned char)*c < 0x20) n += snprintf(buf + n, buf_len - n, " ");
                 else n += snprintf(buf + n, buf_len - n, "%c", *c);
             }
-            n += snprintf(buf + n, buf_len - n, "\"");
+            n += snprintf(buf + n, buf_len - n, "\"}");
         }
         n += snprintf(buf + n, buf_len - n, "]");
         return n;
