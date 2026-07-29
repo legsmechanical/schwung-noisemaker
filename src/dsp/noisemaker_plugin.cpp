@@ -197,20 +197,16 @@ typedef struct {
     const char *opts[MAX_ENUM_OPTS];
 } param_def_t;
 
-/* Combo item counts must match AudioUtils::getNumComboBoxItems. */
-static const char *FILT_OPTS[] = {"LP24","LP18","LP12","LP6","HP24","BP24","Notch",
-                                  "SV-LP","SV-HP","SV-BP","Moog","Moog2"};      // 12
-static const char *OSC1_OPTS[] = {"Saw","Pulse","Noise"};                       // 3
-static const char *OSC2_OPTS[] = {"Saw","Pulse","Tri","Sine","Noise"};          // 5
-static const char *LDST1_OPTS[] = {"None","Filter","Osc1","Osc2","PW","FM","LFO2","Osc1+2"}; // 8
-/* LFO2's destination list is NOT LFO1's. SynthEngine::setLfo2Destination maps
- * slots 5 and 6 to PAN and VOLUME, where LFO1 has PW and FM -- these two were
- * copied from LDST1_OPTS and mislabelled the controls for both of them: the UI
- * offered "PW"/"FM" on LFO2 and the engine panned / gated the voice instead. */
-static const char *LDST2_OPTS[] = {"None","Filter","Osc1","Osc2","Pan","Volume","LFO1","Osc1+2"}; // 8
-static const char *FDST_OPTS[] = {"Off","Filter","Osc1","Osc2","PW","FM"};      // 6
-static const char *PMODE_OPTS[] = {"Off","Auto","On"};                          // 3
-
+/* Enum labels live ONLY in the `opts` field of PARAMS[] below -- that array is
+ * what build_chain_params_json() emits, so it is the single source the host
+ * menus and the module.json generator read. There used to be a parallel set of
+ * standalone FILT_OPTS/LDST1_OPTS/... arrays here that nothing referenced; a
+ * correction applied to the dead copy and not to PARAMS[] shipped anyway. Do
+ * not reintroduce them.
+ *
+ * n_opts must match AudioUtils::getNumComboBoxItems for the same param, and
+ * the label order must match the engine's destination/type enum starting at
+ * its first item (the combo formula emits 1..n, never 0). */
 static const param_def_t PARAMS[] = {
   /* ---- Macros (see NM_M_* above; not engine params) ---- */
   { "wave",          "Wave",          NM_M_WAVE,     K_PCT,    0,0, 0,{0} },
@@ -280,8 +276,10 @@ static const param_def_t PARAMS[] = {
         {"Sin","Tri","Saw","Sqr","S+H","Rnd"} },
   { "lfo2_rate",     "LFO2 Rate",     LFO2RATE,      K_PCT,    0,0, 0,{0} },
   { "lfo2_amount",   "LFO2 Amount",   LFO2AMOUNT,    K_PCT,    0,0, 0,{0} },
+  /* NOT a copy of LFO1's list: LfoHandler2::Destination puts PAN and VOLUME in
+   * slots 5 and 6, where LfoHandler1 has PW and FM. */
   { "lfo2_dest",     "LFO2 Dest",     LFO2DESTINATION,K_ENUM,  0,0, 8,
-        {"None","Filter","Osc1","Osc2","PW","FM","LFO1","Osc1+2"} },
+        {"None","Filter","Osc1","Osc2","Pan","Volume","LFO1","Osc1+2"} },
   { "lfo2_sync",     "LFO2 Sync",     LFO2SYNC,      K_TOGGLE, 0,0, 0,{0} },
   { "lfo2_keytrig",  "LFO2 KeyTrig",  LFO2KEYTRIGGER,K_TOGGLE, 0,0, 0,{0} },
   { "lfo2_phase",    "LFO2 Phase",    LFO2PHASE,     K_PCT,    0,0, 0,{0} },
