@@ -25,9 +25,11 @@
  *   3. Still nothing dry -- but the wet spread is wide. SWFX spans reverb_wet
  *      12..62 and delay_wet 14..55 instead of 22..52 / 20..36.
  *
- * Modulation vocabulary (destination enums, from the wrapper's PARAMS[]):
- *   lfo1_dest / lfo2_dest : 0 None 1 Filter 2 Osc1 3 Osc2 4 PW 5 FM
- *                           6 the-other-LFO 7 Osc1+2
+ * Modulation vocabulary (destination enums). NOTE that LFO1 and LFO2 do NOT
+ * share a destination list -- the engine gives LFO2 Pan and Volume where LFO1
+ * has PW and FM, and the wrapper mislabelled both until 07-29:
+ *   lfo1_dest : 0 None 1 Filter 2 Osc1 3 Osc2 4 PW  5 FM     6 LFO2 7 Osc1+2
+ *   lfo2_dest : 0 None 1 Filter 2 Osc1 3 Osc2 4 Pan 5 Volume 6 LFO1 7 Osc1+2
  *   free_dest             : 0 Off 1 Filter 2 Osc1 3 Osc2 4 PW 5 FM
  *   lfo waveform          : 0 Sin 1 Tri 2 Saw 3 Sqr 4 S+H 5 Rnd
  *   filter_type           : 0 LP24 1 LP18 2 LP12 3 LP6 4 HP24 5 BP24 6 Notch
@@ -71,14 +73,39 @@ const PWM = (amount = 42, rate = 24) =>
 const WOBBLE = (amount = 34, rate = 30, wave = 0) =>
   ({ lfo1_wave: wave, lfo1_rate: rate, lfo1_amount: amount, lfo1_dest: 1 });
 
-/* Slow stereo-ish drift on both oscillators -- the "analog instability" that
- * keeps a held chord from sounding like a sample. Deliberately tiny. */
-const DRIFT = (amount = 12, rate = 8) =>
-  ({ lfo2_wave: 0, lfo2_rate: rate, lfo2_amount: amount, lfo2_dest: 7 });
+/* ---- why nothing here modulates PITCH -----------------------------------
+ * LFO -> pitch on this engine is unusably coarse. Vco.h adds the LFO straight
+ * to the note number and LfoHandler2 returns `value * 48.0f * amount`, so the
+ * depth is +/-48 SEMITONES x amount:
+ *
+ *      amount   1  ->  +/-0.5 semitone   (the smallest step the 0..100 integer
+ *                                         wire can express)
+ *      amount   8  ->  +/-3.8 semitones
+ *      amount  32  ->  +/-15.4 semitones
+ *
+ * The first cut of this bank used `lfo2_dest: 7` (Osc1+2) at amounts 8..32 for
+ * what was meant to be gentle analog drift and lead vibrato. That is between
+ * a major third and an octave of wobble -- Josh flagged BS Outrun, BS FM Growl
+ * and BS Crush Bass as unusable for melodic work, correctly.
+ *
+ * There is no fix by retuning the number: a musical vibrato is +/-10..25 cents
+ * and the smallest value available is +/-50, so pitch modulation is simply not
+ * reachable at a subtle depth here. Both helpers therefore moved OFF pitch and
+ * the old VIB is gone entirely. gen_presets.mjs now REJECTS any SW preset that
+ * routes an LFO to pitch, so this cannot come back by accident.
+ *
+ * Pan was the obvious home for "drift" and is also unusable: LfoHandler2's
+ * getPan() returns `value` and never reads `amount`, so it is full hard L/R
+ * regardless of the depth you dial -- an amount that silently does nothing.
+ * The filter route IS amount-scaled ((1+value)*0.5*amount), so drift lives
+ * there. */
 
-/* Delayed vibrato on LFO2 so it does not smear the attack. */
-const VIB = (amount = 16, rate = 34) =>
-  ({ lfo2_wave: 0, lfo2_rate: rate, lfo2_amount: amount, lfo2_dest: 7 });
+/* Slow filter drift -- the "analog instability" that keeps a held chord from
+ * sounding like a sample. Filter, NOT pitch and NOT pan (see above). Where a
+ * preset also has LFO1 on the filter the two simply sum at different rates,
+ * which is the intended shimmer rather than a conflict. */
+const DRIFT = (amount = 12, rate = 8) =>
+  ({ lfo2_wave: 0, lfo2_rate: rate, lfo2_amount: amount, lfo2_dest: 1 });
 
 /* Env 3 (the free A/D envelope) as a per-note accent. Short = a click/blip on
  * the attack, which is where the "modern" bite comes from. */
@@ -187,21 +214,21 @@ export default [
    * vibrato and PWM doing the "played" feel. */
 
   { cat: "LD", prefix: "SW", name: "Neon", fx: [SWFX.chorusWide, SWFX.plate, SWFX.dotted],
-    p: { ...MONO, ...PWM(48, 28), ...VIB(18, 36),
+    p: { ...MONO, ...PWM(48, 28), ...DRIFT(18, 36),
          osc1_wave: 1, osc1_pw: 46, osc2_wave: 0, osc2_vol: 64, osc2_tune: st(-12),
          detune: 30, filter_type: 2, cutoff: 74, resonance: 30, keyfollow: 58,
          filter_env: 48, filter_drive: 26, fenv_d: 40, fenv_s: 42, fenv_r: 34,
          aenv_a: 3, aenv_s: 84, aenv_r: 30, portamento: 10, porta_mode: 1 } },
 
   { cat: "LD", prefix: "SW", name: "Sync Scream", fx: [SWFX.snap, SWFX.triplet],
-    p: { ...MONO, ...BLIP(86, 24, 3), ...VIB(22, 38),
+    p: { ...MONO, ...BLIP(86, 24, 3), ...DRIFT(22, 38),
          osc1_wave: 0, osc2_wave: 0, osc2_vol: 74, osc2_tune: st(7), osc_sync: 1,
          detune: 12, filter_type: 3, cutoff: 82, resonance: 34, keyfollow: 62,
          filter_env: 58, filter_drive: 44, fenv_d: 30, fenv_s: 30, fenv_r: 26,
          aenv_a: 2, aenv_s: 82, aenv_r: 24 } },
 
   { cat: "LD", prefix: "SW", name: "Hero Saw", fx: [SWFX.chorusWide, SWFX.hall, SWFX.dotted],
-    p: { ...MONO, ...VIB(20, 34), ...DRIFT(14, 6),
+    p: { ...MONO, ...DRIFT(14, 6),
          osc1_wave: 0, osc2_wave: 0, osc2_vol: 78, detune: 58,
          filter_type: 2, cutoff: 78, resonance: 24, keyfollow: 60,
          filter_env: 44, filter_drive: 30, fenv_d: 44, fenv_s: 48, fenv_r: 36,
@@ -215,14 +242,14 @@ export default [
          aenv_a: 0, aenv_d: 60, aenv_s: 30, aenv_r: 44 } },
 
   { cat: "LD", prefix: "SW", name: "PWM Lead", fx: [SWFX.chorusDeep, SWFX.plate, SWFX.eighth],
-    p: { ...MONO, ...PWM(62, 32), ...VIB(14, 40),
+    p: { ...MONO, ...PWM(62, 32), ...DRIFT(14, 40),
          osc1_wave: 1, osc1_pw: 52, osc2_wave: 1, osc2_vol: 58, osc2_tune: st(-12),
          detune: 24, filter_type: 2, cutoff: 76, resonance: 28, keyfollow: 56,
          filter_env: 46, filter_drive: 24, fenv_d: 38, fenv_s: 40, fenv_r: 32,
          aenv_a: 3, aenv_s: 84, aenv_r: 28 } },
 
   { cat: "LD", prefix: "SW", name: "Whistle", fx: [SWFX.chorus, SWFX.hall, SWFX.dotted],
-    p: { ...MONO, ...VIB(26, 42), ...BLIP(48, 26, 5),
+    p: { ...MONO, ...DRIFT(26, 42), ...BLIP(48, 26, 5),
          osc1_wave: 0, osc1_vol: 34, osc2_wave: 3, osc2_vol: 80, osc2_fm: 6,
          detune: 10, filter_type: 3, cutoff: 88, resonance: 16, keyfollow: 66,
          filter_env: 34, fenv_d: 36, fenv_s: 40,
@@ -236,7 +263,7 @@ export default [
          portamento: 18, porta_mode: 1 } },
 
   { cat: "LD", prefix: "SW", name: "Ring Lead", fx: [SWFX.chorus, SWFX.snap, SWFX.triplet],
-    p: { ...MONO, ...WOBBLE(34, 34), ...VIB(16, 36),
+    p: { ...MONO, ...WOBBLE(34, 34), ...DRIFT(16, 36),
          osc1_wave: 1, osc1_pw: 40, osc2_wave: 1, osc2_vol: 66, osc2_tune: st(7),
          ringmod: 26, detune: 18, filter_type: 5, cutoff: 72, resonance: 40,
          keyfollow: 54, filter_env: 52, filter_drive: 34,
@@ -257,28 +284,28 @@ export default [
          aenv_a: 2, aenv_s: 82, aenv_r: 24 } },
 
   { cat: "LD", prefix: "SW", name: "Detune Stack", fx: [SWFX.chorusWide, SWFX.hall, SWFX.wide],
-    p: { ...POLY, ...DRIFT(20, 5), ...VIB(12, 32), voices: 6,
+    p: { ...POLY, ...DRIFT(20, 5), voices: 6,
          osc1_wave: 0, osc2_wave: 0, osc2_vol: 82, osc2_fine: 56, detune: 70,
          filter_type: 2, cutoff: 72, resonance: 20, keyfollow: 56,
          filter_env: 42, filter_drive: 26, fenv_d: 46, fenv_s: 46,
          aenv_a: 6, aenv_s: 86, aenv_r: 38 } },
 
   { cat: "LD", prefix: "SW", name: "S+H Lead", fx: [SWFX.snap, SWFX.sixteenth],
-    p: { ...MONO, ...SH(46, 56), ...VIB(14, 34),
+    p: { ...MONO, ...SH(46, 56), ...DRIFT(14, 34),
          osc1_wave: 1, osc1_pw: 44, osc2_wave: 0, osc2_vol: 58, detune: 26,
          filter_type: 5, cutoff: 66, resonance: 48, keyfollow: 52,
          filter_env: 54, filter_drive: 32, fenv_d: 28, fenv_s: 30,
          aenv_a: 2, aenv_s: 80, aenv_r: 22 } },
 
   { cat: "LD", prefix: "SW", name: "Vox Lead", fx: [SWFX.chorusDeep, SWFX.plate, SWFX.dotted],
-    p: { ...MONO, ...PWM(52, 20), ...VIB(18, 38),
+    p: { ...MONO, ...PWM(52, 20), ...DRIFT(18, 38),
          osc1_wave: 1, osc1_pw: 62, osc2_wave: 1, osc2_vol: 60, osc2_tune: st(-12),
          detune: 26, filter_type: 6, cutoff: 70, resonance: 34, keyfollow: 54,
          filter_env: 44, filter_drive: 22, fenv_d: 40, fenv_s: 44,
          aenv_a: 6, aenv_s: 86, aenv_r: 30 } },
 
   { cat: "LD", prefix: "SW", name: "Crush Lead", fx: [SWFX.snap, SWFX.triplet],
-    p: { ...MONO, ...BLIP(78, 18), ...VIB(16, 36),
+    p: { ...MONO, ...BLIP(78, 18), ...DRIFT(16, 36),
          osc1_wave: 0, osc2_wave: 0, osc2_vol: 60, osc2_tune: st(12),
          bitcrush: 46, detune: 22, filter_type: 3, cutoff: 80, resonance: 30,
          keyfollow: 60, filter_env: 50, filter_drive: 38,
@@ -352,7 +379,7 @@ export default [
          aenv_a: 40, aenv_s: 84, aenv_r: 64 } },
 
   { cat: "PD", prefix: "SW", name: "Strings", fx: [SWFX.chorusWide, SWFX.hall, SWFX.wide],
-    p: { ...POLY, ...DRIFT(22, 4), ...VIB(14, 30),
+    p: { ...POLY, ...DRIFT(22, 4),
          osc1_wave: 0, osc2_wave: 0, osc2_vol: 80, osc2_fine: 55, detune: 62,
          filter_type: 2, cutoff: 60, resonance: 16, keyfollow: 44,
          filter_env: 34, fenv_a: 30, fenv_d: 66, fenv_s: 46,
@@ -403,7 +430,7 @@ export default [
          aenv_a: 0, aenv_d: 34, aenv_s: 20, aenv_r: 20 } },
 
   { cat: "KB", prefix: "SW", name: "Organ", fx: [SWFX.chorusDeep, SWFX.chamber, SWFX.slap],
-    p: { ...POLY, ...VIB(22, 40), ...DRIFT(8, 7),
+    p: { ...POLY, ...DRIFT(8, 7),
          osc1_wave: 1, osc1_pw: 50, osc2_wave: 1, osc2_vol: 70, osc2_tune: st(12),
          osc3_vol: 40, detune: 10, filter_type: 3, cutoff: 80, resonance: 14,
          keyfollow: 52, filter_env: 20, fenv_d: 30, fenv_s: 60,

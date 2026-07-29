@@ -96,6 +96,18 @@ for (const p of presets) {
     for (const [i, [dest, amt]] of routes.entries())
       if (dest > 0 && amt === 0)
         errs.push(`${p.name}: mod route ${i + 1} has a destination but zero depth`);
+
+    /* LFO -> pitch is +/-48 SEMITONES x amount (Vco.h adds it to the note
+     * number), so the smallest step the 0..100 wire can express is already
+     * +/-half a semitone -- far past a musical vibrato. The first cut of this
+     * bank used it at amounts 8..32 and shipped basses that wobbled by up to
+     * an octave. There is no usable depth, so the destination is banned here
+     * rather than bounded. Osc1 = 2, Osc2 = 3, Osc1+2 = 7 on both LFOs. */
+    const PITCH_DESTS = [2, 3, 7];
+    if (PITCH_DESTS.includes(p.state.lfo1_dest) && p.state.lfo1_amount > 0)
+      errs.push(`${p.name}: lfo1 routed to pitch (dest ${p.state.lfo1_dest}) — +/-48 semitones x amount, unusable melodically`);
+    if (PITCH_DESTS.includes(p.state.lfo2_dest) && p.state.lfo2_amount > 0)
+      errs.push(`${p.name}: lfo2 routed to pitch (dest ${p.state.lfo2_dest}) — +/-48 semitones x amount, unusable melodically`);
   }
 
   for (const [k, v] of Object.entries(p.state)) {

@@ -203,7 +203,11 @@ static const char *FILT_OPTS[] = {"LP24","LP18","LP12","LP6","HP24","BP24","Notc
 static const char *OSC1_OPTS[] = {"Saw","Pulse","Noise"};                       // 3
 static const char *OSC2_OPTS[] = {"Saw","Pulse","Tri","Sine","Noise"};          // 5
 static const char *LDST1_OPTS[] = {"None","Filter","Osc1","Osc2","PW","FM","LFO2","Osc1+2"}; // 8
-static const char *LDST2_OPTS[] = {"None","Filter","Osc1","Osc2","PW","FM","LFO1","Osc1+2"}; // 8
+/* LFO2's destination list is NOT LFO1's. SynthEngine::setLfo2Destination maps
+ * slots 5 and 6 to PAN and VOLUME, where LFO1 has PW and FM -- these two were
+ * copied from LDST1_OPTS and mislabelled the controls for both of them: the UI
+ * offered "PW"/"FM" on LFO2 and the engine panned / gated the voice instead. */
+static const char *LDST2_OPTS[] = {"None","Filter","Osc1","Osc2","Pan","Volume","LFO1","Osc1+2"}; // 8
 static const char *FDST_OPTS[] = {"Off","Filter","Osc1","Osc2","PW","FM"};      // 6
 static const char *PMODE_OPTS[] = {"Off","Auto","On"};                          // 3
 

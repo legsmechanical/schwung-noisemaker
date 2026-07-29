@@ -710,8 +710,10 @@ const FILT_SQ  = ["L24","L18","L12","L6","H24","B24","Ntc","SVL","SVH","SVB","Mo
 const FILT_MODES = ["lp","lp","lp","lp","hp","bp","notch","lp","hp","bp","lp","lp"];
 const LDST1    = ["None","Filter","Osc1","Osc2","PW","FM","LFO2","Osc1+2"];
 const LDST1_SQ = ["Non","Flt","Os1","Os2","PW","FM","LF2","O12"];
-const LDST2    = ["None","Filter","Osc1","Osc2","PW","FM","LFO1","Osc1+2"];
-const LDST2_SQ = ["Non","Flt","Os1","Os2","PW","FM","LF1","O12"];
+/* NOT a copy of LDST1: the engine's setLfo2Destination puts PAN and VOLUME
+ * where LFO1 has PW and FM (see the LDST2_OPTS note in the wrapper). */
+const LDST2    = ["None","Filter","Osc1","Osc2","Pan","Volume","LFO1","Osc1+2"];
+const LDST2_SQ = ["Non","Flt","Os1","Os2","Pan","Vol","LF1","O12"];
 const FDST     = ["Off","Filter","Osc1","Osc2","PW","FM"];
 const FDST_SQ  = ["Off","Flt","Os1","Os2","PW","FM"];
 const PMODE    = ["Off","Auto","On"];
