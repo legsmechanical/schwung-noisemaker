@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history: the last step checks out master to update release.json,
+      # and this job is triggered on a TAG. A shallow clone makes that a
+      # coin-flip -- and it would fail AFTER the release is already published,
+      # which is the worst place to fail.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify version match
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MODULE_VERSION=$(grep '"version"' src/module.json | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+          if [ "$TAG_VERSION" != "$MODULE_VERSION" ]; then
+            echo "ERROR: Tag version ($TAG_VERSION) does not match module.json version ($MODULE_VERSION)"
+            echo "Please update src/module.json to version $TAG_VERSION before tagging."
+            exit 1
+          fi
+          echo "Version check passed: $TAG_VERSION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # build.sh re-invokes itself under Docker unless it is already inside a
+      # container, so running it in one here skips that and cross-compiles
+      # directly. The node generators (module.json ui_hierarchy, param_names.h,
+      # wave anchors, canvas.js) live inside the same guard and are therefore
+      # NOT run in CI -- correct, because all four outputs are committed, and
+      # the canvaskit step needs a sibling repo that does not exist here.
+      - name: Build with Docker
+        run: |
+          docker build -t module-builder -f scripts/Dockerfile .
+          docker run --rm -v "$PWD:/build" -w /build module-builder ./scripts/build.sh
+
+      # Guard against the generated-but-committed files having drifted from
+      # their sources. CI does not regenerate them, so a stale commit would
+      # ship a module.json whose ui_hierarchy does not match the wrapper --
+      # which reads on-device as silently dead knobs and menus.
+      - name: Check generated files are current
+        run: |
+          node tools/gen_module_json.mjs
+          node tools/gen_param_names.mjs
+          node tools/gen_wave_anchors.mjs
+          if ! git diff --quiet -- src/module.json src/dsp/param_names.h src/canvas.config.js; then
+            echo "ERROR: generated files are stale. Run scripts/build.sh and commit the result."
+            git diff --stat -- src/module.json src/dsp/param_names.h src/canvas.config.js
+            exit 1
+          fi
+          echo "Generated files are current."
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/noisemaker-module.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # MERGE into release.json rather than rewriting it. The ottx/pushnpull
+      # workflows emit the file from a heredoc, which silently drops every
+      # field the heredoc does not mention -- this repo's release.json also
+      # carries `name` and `description`, which the catalog uses.
+      - name: Update release.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/noisemaker-module.tar.gz"
+
+          git fetch origin master
+          git checkout -f master
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          jq --arg v "$VERSION" --arg u "$URL" \
+             '.version = $v | .download_url = $u' release.json > release.json.tmp
+          mv release.json.tmp release.json
+
+          git add release.json
+          git commit -m "chore: update release.json for ${{ github.ref_name }}" || echo "No changes to commit"
+          git push origin master
