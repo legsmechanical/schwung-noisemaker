@@ -30,6 +30,10 @@
 #include "Engine/Params.h"        // SYNTHPARAMETERS enum + NUMPARAM
 #include "factory_bank.h"         // NM_FACTORY_BANK[] (generated; normalized values)
 #include "factory_splines.h"      // NM_FACTORY_SPLINES[] (generated; per-preset env shapes)
+#include "nm_import.h"            // .noisemakerpreset parser (imported banks)
+
+#include <dirent.h>
+#include <sys/stat.h>
 
 /* ---- host / plugin ABI ---- */
 #ifndef MOVE_SAMPLE_RATE
@@ -355,6 +359,50 @@ static const patch_val_t DEFAULT_PATCH[] = {
 static const int DEFAULT_PATCH_COUNT = (int)(sizeof(DEFAULT_PATCH) / sizeof(DEFAULT_PATCH[0]));
 
 /* ======================================================================== *
+ *  Imported preset banks
+ * ========================================================================
+ * A user drops folders of loose `.noisemakerpreset` files under
+ * NM_BANK_ROOT; each immediate child folder becomes a selectable bank,
+ * gathering presets from its own subfolders recursively (the TAL packs in the
+ * wild are one folder per author with BASS/LEAD/PAD/... inside). Loose presets
+ * sitting directly in the root become one bank named after the root.
+ *
+ * The root is deliberately OUTSIDE the module directory. obxd keeps its banks
+ * in <module_dir>/presets, which works until a catalog update extracts a new
+ * tarball over that directory, or an uninstall removes it -- either takes the
+ * user's own imports with it. It is also not the host's own
+ * presets/<module-id>/ store, which holds module-preset JSON and is walked by
+ * the host's browser.
+ *
+ * NOTHING IS CONVERTED OR CACHED. Building the bank list is a readdir of the
+ * root; opening a bank is a readdir of that folder; selecting a preset parses
+ * exactly ONE ~4 KB file. There is no import step to run, no cache to
+ * invalidate, and no way for the module's view to drift from what is on disk.
+ * The list is rebuilt on every query, so a folder copied onto the device shows
+ * up the next time the selector is opened (obxd does the same -- see the
+ * "rescan on each query" comment on its fxb_bank_list).
+ *
+ * The preset NAME shown is the file name, not the <program programname>
+ * inside. That is what the user sees in their folder, it sorts the way their
+ * folder sorts, and it means listing a bank costs no file reads at all.
+ */
+/* Overridable so the off-device test can point the whole bank layer at a
+ * temporary tree; the device never defines it. */
+#ifndef NM_BANK_ROOT
+#define NM_BANK_ROOT        "/data/UserData/schwung/preset-banks/noisemaker"
+#endif
+#define NM_PRESET_EXT       ".noisemakerpreset"
+#define NM_MAX_BANKS        64
+#define NM_MAX_BANK_PRESETS 512
+#define NM_MAX_RELPATH      160
+#define NM_MAX_BANKNAME     64
+
+typedef struct {
+    char name[NM_MAX_BANKNAME];   /* folder name; "" for the factory bank */
+    int  is_factory;
+} nm_bank_t;
+
+/* ======================================================================== *
  *  Instance
  * ======================================================================== */
 typedef struct {
@@ -369,6 +417,16 @@ typedef struct {
     float       wave_tune_semis; // the Wave macro's osc2 pitch contribution
                                  // (FM compensation or an anchor's interval);
                                  // summed with the tune2 macro, not a param
+
+    /* ---- banks ---- */
+    nm_bank_t   banks[NM_MAX_BANKS];
+    int         bank_count;
+    int         cur_bank;        // 0 == factory
+    /* File list for cur_bank only, relative to that bank's folder. Sorted, so
+     * an index is stable for as long as the folder is. ~80 KB; only the
+     * selected bank is ever held. */
+    char        (*bank_files)[NM_MAX_RELPATH];
+    int         bank_file_count;
 } nm_instance_t;
 
 static const param_def_t *find_param(const char *key) {
@@ -866,17 +924,15 @@ static void engine_to_disp(const param_def_t *p, float norm, char *buf, int len)
  * (which takes ownership of the new set); the previously-installed set is freed
  * afterwards. Presets with no custom shape get the flat 0.5 line = no
  * modulation (matches TAL's default and the empty-<splinePoints/> presets). */
-static void install_preset_spline(nm_instance_t *inst, int idx) {
-    const int nSets = (int)(sizeof(NM_FACTORY_SPLINES) / sizeof(NM_FACTORY_SPLINES[0]));
-    if (idx < 0 || idx >= nSets) return;
+static void install_spline_points(nm_instance_t *inst,
+                                  const nm_spline_point_t *src, int count) {
     EnvelopeEditor *ed = inst->synth->getEnvelopeEditor();
     Array<SplinePoint*> old = ed->getPoints();   // current (default or prev preset)
 
     Array<SplinePoint*> pts;
-    const nm_spline_set_t *s = &NM_FACTORY_SPLINES[idx];
-    if (s->count >= 2) {
-        for (int i = 0; i < s->count; i++) {
-            const nm_spline_point_t *sp = &s->points[i];
+    if (src && count >= 2) {
+        for (int i = 0; i < count; i++) {
+            const nm_spline_point_t *sp = &src[i];
             SplinePoint *p = new SplinePoint(juce::Point<float>(sp->cx, sp->cy));
             p->setStartPoint(sp->isStart != 0);
             p->setEndPoint(sp->isEnd != 0);
@@ -895,6 +951,13 @@ static void install_preset_spline(nm_instance_t *inst, int idx) {
 
     ed->setPoints(pts);                                  // editor copies the pointer array
     for (int i = 0; i < old.size(); i++) delete old[i];  // free the replaced set
+}
+
+static void install_preset_spline(nm_instance_t *inst, int idx) {
+    const int nSets = (int)(sizeof(NM_FACTORY_SPLINES) / sizeof(NM_FACTORY_SPLINES[0]));
+    if (idx < 0 || idx >= nSets) return;
+    const nm_spline_set_t *s = &NM_FACTORY_SPLINES[idx];
+    install_spline_points(inst, s->points, s->count);
 }
 
 /* Load one factory program (256-entry bank, normalized values). Release first
@@ -922,7 +985,205 @@ static void reset_macros(nm_instance_t *inst) {
     inst->wave_tune_semis  = 0.0f;
 }
 
+/* ======================================================================== *
+ *  Bank discovery + loading
+ * ======================================================================== */
+
+static int nm_has_ext(const char *name, const char *ext) {
+    size_t nl = strlen(name), el = strlen(ext);
+    if (nl <= el) return 0;
+    return strcasecmp(name + nl - el, ext) == 0;
+}
+
+static int nm_is_dir(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int nm_str_cmp(const void *a, const void *b) {
+    return strcmp((const char *)a, (const char *)b);
+}
+
+/* Absolute path of a bank's folder. The factory bank has none. */
+static void nm_bank_dir(const nm_instance_t *inst, int bank, char *out, int len) {
+    out[0] = '\0';
+    if (bank <= 0 || bank >= inst->bank_count) return;
+    const nm_bank_t *b = &inst->banks[bank];
+    if (b->name[0] == '\0') snprintf(out, len, "%s", NM_BANK_ROOT);
+    else                    snprintf(out, len, "%s/%s", NM_BANK_ROOT, b->name);
+}
+
+/* Rebuild banks[] from the filesystem. Cheap (one or two readdirs, no file
+ * reads), so it runs on every bank-list query rather than needing a Rescan. */
+static void nm_scan_banks(nm_instance_t *inst) {
+    char prev[NM_MAX_BANKNAME];
+    snprintf(prev, sizeof(prev), "%s",
+             (inst->cur_bank >= 0 && inst->cur_bank < inst->bank_count)
+                 ? inst->banks[inst->cur_bank].name : "");
+    int prev_factory = (inst->cur_bank == 0);
+
+    inst->bank_count = 0;
+    nm_bank_t *f = &inst->banks[inst->bank_count++];
+    snprintf(f->name, sizeof(f->name), "Factory");
+    f->is_factory = 1;
+
+    DIR *d = opendir(NM_BANK_ROOT);
+    if (d) {
+        int loose = 0;
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL && inst->bank_count < NM_MAX_BANKS) {
+            if (e->d_name[0] == '.') continue;      /* . .. and dotfiles */
+            char p[512];
+            snprintf(p, sizeof(p), "%s/%s", NM_BANK_ROOT, e->d_name);
+            if (nm_is_dir(p)) {
+                nm_bank_t *b = &inst->banks[inst->bank_count++];
+                snprintf(b->name, sizeof(b->name), "%s", e->d_name);
+                b->is_factory = 0;
+            } else if (nm_has_ext(e->d_name, NM_PRESET_EXT)) {
+                loose = 1;
+            }
+        }
+        closedir(d);
+
+        /* Presets sitting directly in the root are a bank too, so pointing the
+         * feature at a flat folder of presets works without nesting. */
+        if (loose && inst->bank_count < NM_MAX_BANKS) {
+            nm_bank_t *b = &inst->banks[inst->bank_count++];
+            b->name[0] = '\0';                      /* "" == the root itself */
+            b->is_factory = 0;
+        }
+
+        /* Sort the imported banks (leave Factory pinned at 0). */
+        if (inst->bank_count > 2)
+            qsort(inst->banks + 1, (size_t)(inst->bank_count - 1),
+                  sizeof(nm_bank_t), nm_str_cmp);
+    }
+
+    /* Re-find the selected bank BY NAME. Indices move when a folder is added
+     * or removed, so restoring an index would silently select a different
+     * bank. */
+    inst->cur_bank = 0;
+    if (!prev_factory) {
+        for (int i = 1; i < inst->bank_count; i++) {
+            if (strcmp(inst->banks[i].name, prev) == 0) { inst->cur_bank = i; break; }
+        }
+    }
+}
+
+/* Collect preset files under `dir`, recursively, as paths relative to the
+ * bank root. Depth-limited: a symlink loop under a user-writable directory
+ * would otherwise hang the synth. */
+static void nm_collect(nm_instance_t *inst, const char *dir, const char *rel,
+                       int depth, int max_depth) {
+    if (depth > max_depth || inst->bank_file_count >= NM_MAX_BANK_PRESETS) return;
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && inst->bank_file_count < NM_MAX_BANK_PRESETS) {
+        if (e->d_name[0] == '.') continue;
+        char sub[512], subrel[NM_MAX_RELPATH];
+        snprintf(sub, sizeof(sub), "%s/%s", dir, e->d_name);
+        if (rel[0]) snprintf(subrel, sizeof(subrel), "%s/%s", rel, e->d_name);
+        else        snprintf(subrel, sizeof(subrel), "%s", e->d_name);
+        if (nm_is_dir(sub)) {
+            nm_collect(inst, sub, subrel, depth + 1, max_depth);
+        } else if (nm_has_ext(e->d_name, NM_PRESET_EXT)) {
+            snprintf(inst->bank_files[inst->bank_file_count++], NM_MAX_RELPATH, "%s", subrel);
+        }
+    }
+    closedir(d);
+}
+
+/* Populate bank_files[] for the current bank. Sorted so indices are stable. */
+static void nm_load_bank_files(nm_instance_t *inst) {
+    inst->bank_file_count = 0;
+    if (inst->cur_bank <= 0) return;              /* factory is baked in */
+    if (!inst->bank_files) {
+        inst->bank_files = (char (*)[NM_MAX_RELPATH])
+            calloc(NM_MAX_BANK_PRESETS, NM_MAX_RELPATH);
+        if (!inst->bank_files) return;
+    }
+    char dir[512];
+    nm_bank_dir(inst, inst->cur_bank, dir, sizeof(dir));
+    /* ⚠ The "(loose)" bank IS the root, whose subfolders are the other banks.
+     * Recursing there would gather every preset on the device into it -- the
+     * whole library, duplicated, on top of the banks that already hold it.
+     * Loose means loose: depth 0 only. */
+    int max_depth = inst->banks[inst->cur_bank].name[0] ? 4 : 0;
+    if (dir[0]) nm_collect(inst, dir, "", 0, max_depth);
+    if (inst->bank_file_count > 1)
+        qsort(inst->bank_files, (size_t)inst->bank_file_count,
+              NM_MAX_RELPATH, nm_str_cmp);
+}
+
+static int nm_preset_count(const nm_instance_t *inst) {
+    return inst->cur_bank <= 0 ? NM_FACTORY_COUNT : inst->bank_file_count;
+}
+
+/* Display name for a preset: the file's stem. */
+static void nm_preset_name(const nm_instance_t *inst, int idx, char *out, int len) {
+    out[0] = '\0';
+    if (inst->cur_bank <= 0) {
+        if (idx >= 0 && idx < NM_FACTORY_COUNT)
+            snprintf(out, len, "%s", NM_FACTORY_BANK[idx].name);
+        return;
+    }
+    if (idx < 0 || idx >= inst->bank_file_count) return;
+    const char *rel = inst->bank_files[idx];
+    const char *base = strrchr(rel, '/');
+    base = base ? base + 1 : rel;
+    snprintf(out, len, "%s", base);
+    char *dot = strrchr(out, '.');
+    if (dot && strcasecmp(dot, NM_PRESET_EXT) == 0) *dot = '\0';
+}
+
+/* Install an arbitrary spline shape (imported presets); the factory path goes
+ * through install_preset_spline, which indexes the baked table. */
+static void install_spline_points(nm_instance_t *inst,
+                                  const nm_spline_point_t *pts, int count);
+
+/* Read + apply one imported preset. Returns 1 on success. */
+static int nm_load_imported(nm_instance_t *inst, int idx) {
+    if (idx < 0 || idx >= inst->bank_file_count) return 0;
+    char dir[512], path[700];
+    nm_bank_dir(inst, inst->cur_bank, dir, sizeof(dir));
+    if (!dir[0]) return 0;
+    snprintf(path, sizeof(path), "%s/%s", dir, inst->bank_files[idx]);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    /* A preset is a few KB; anything far larger is not one, and reading it
+     * would be a denial of service against a synth voice. */
+    if (n <= 0 || n > 512 * 1024) { fclose(f); return 0; }
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return 0; }
+    size_t got = fread(buf, 1, (size_t)n, f);
+    fclose(f);
+    buf[got] = '\0';
+
+    nm_import_preset_t p;
+    int ok = nm_import_parse(buf, (int)got, &p, NULL);
+    free(buf);
+    if (!ok) return 0;
+
+    inst->synth->setPanic();
+    reset_macros(inst);
+    for (int i = 1; i < NUMPARAM; i++) {          // skip UNUSED1(0)
+        if (i == PANIC) continue;
+        apply_engine(inst, i, p.data[i]);
+    }
+    install_spline_points(inst, p.spline, p.spline_count);
+    return 1;
+}
+
 static void load_preset(nm_instance_t *inst, int idx) {
+    if (inst->cur_bank > 0) {
+        if (nm_load_imported(inst, idx)) inst->cur_preset = idx;
+        return;
+    }
     if (idx < 0 || idx >= NM_FACTORY_COUNT) return;
     inst->cur_preset = idx;
     inst->synth->setPanic();
@@ -935,6 +1196,16 @@ static void load_preset(nm_instance_t *inst, int idx) {
     install_preset_spline(inst, idx);   // per-preset envelope-editor shape
 }
 
+/* Switch banks. The preset index does not carry across -- bank 1 slot 40 has
+ * nothing to do with bank 2 slot 40 -- so land on the first preset. */
+static void nm_switch_bank(nm_instance_t *inst, int bank) {
+    if (bank < 0 || bank >= inst->bank_count) return;
+    inst->cur_bank = bank;
+    nm_load_bank_files(inst);
+    inst->cur_preset = -1;
+    if (nm_preset_count(inst) > 0) load_preset(inst, 0);
+}
+
 /* ======================================================================== *
  *  ui_hierarchy + chain_params JSON
  * ======================================================================== */
@@ -945,6 +1216,7 @@ static const char *kUiHierarchy =
    "\"knobs\":[\"wave\",\"tune2\",\"cutoff\",\"resonance\",\"filter_env\",\"fenv_time\",\"aenv_time\",\"volume\"],"
    "\"params\":["
      "{\"key\":\"editor\",\"label\":\"Editor\"},"
+     "{\"level\":\"banks\",\"label\":\"Preset Bank\"},"
      "{\"level\":\"macros\",\"label\":\"Macros\"},"
      "{\"level\":\"osc\",\"label\":\"Oscillators\"},"
      "{\"level\":\"filter\",\"label\":\"Filter\"},"
@@ -958,6 +1230,9 @@ static const char *kUiHierarchy =
      "{\"level\":\"fx\",\"label\":\"Chorus / Reverb\"},"
      "{\"level\":\"delay\",\"label\":\"Delay\"}"
    "]},"
+ /* Selection level: items_param is re-read (and rescanned) on entry, so banks
+  * copied onto the device appear without any explicit refresh. */
+ "\"banks\":{\"label\":\"Preset Bank\",\"items_param\":\"bank_list\",\"select_param\":\"bank_index\"},"
  "\"macros\":{\"knobs\":[\"wave\",\"tune2\",\"cutoff\",\"resonance\",\"filter_env\",\"fenv_time\",\"aenv_time\",\"volume\"],"
    "\"params\":[\"wave\",\"tune2\",\"fenv_time\",\"aenv_time\",\"cutoff\",\"resonance\",\"filter_env\",\"volume\"]},"
  "\"osc\":{\"knobs\":[\"osc1_wave\",\"osc2_wave\",\"osc1_vol\",\"osc2_vol\",\"osc3_vol\",\"detune\",\"osc1_pw\",\"ringmod\"],"
@@ -1049,6 +1324,10 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->octave_transpose = 0;
     inst->editor_page = 0;
     inst->cur_preset = -1;
+    inst->cur_bank = 0;
+    inst->bank_files = NULL;
+    inst->bank_file_count = 0;
+    nm_scan_banks(inst);
 
     inst->synth = new SynthEngine((float)MOVE_SAMPLE_RATE);
     inst->synth->setNumberOfVoices(1.0f);   // normalized -> combo 6
@@ -1068,6 +1347,7 @@ static void v2_destroy_instance(void *instance) {
     nm_instance_t *inst = (nm_instance_t *)instance;
     if (!inst) return;
     delete inst->synth;
+    free(inst->bank_files);
     free(inst);
 }
 
@@ -1124,8 +1404,13 @@ static int nm_json_get_number(const char *json, const char *key, float *out) {
  * feature can capture it. Restored by set_param("state", ...). */
 static int build_state(nm_instance_t *inst, char *buf, int buf_len) {
     int n = 0;
-    n += snprintf(buf + n, buf_len - n, "{\"preset\":%d,\"octave_transpose\":%d",
-                  inst->cur_preset, inst->octave_transpose);
+    /* The bank is stored by NAME. An index would silently point at a different
+     * bank as soon as the user adds or removes a folder. */
+    n += snprintf(buf + n, buf_len - n,
+                  "{\"preset\":%d,\"octave_transpose\":%d,\"bank_name\":\"%s\"",
+                  inst->cur_preset, inst->octave_transpose,
+                  (inst->cur_bank > 0 && inst->cur_bank < inst->bank_count)
+                      ? inst->banks[inst->cur_bank].name : "");
     char v[32];
     for (int i = 0; i < NM_PARAM_COUNT && n < buf_len - 64; i++) {
         engine_to_disp(&PARAMS[i], inst->eng[PARAMS[i].engine_index], v, sizeof(v));
@@ -1139,9 +1424,31 @@ static int build_state(nm_instance_t *inst, char *buf, int buf_len) {
  * shape + base param values), then overlay every stored param value. */
 static void restore_state(nm_instance_t *inst, const char *json) {
     float f;
+
+    /* Bank first: it decides what the preset index means. Resolved by name
+     * against a fresh scan, so a state blob still finds its bank after other
+     * folders have come and gone. A bank that is no longer on the device falls
+     * back to Factory rather than to whatever now sits at that index. */
+    nm_scan_banks(inst);
+    char want[NM_MAX_BANKNAME] = "";
+    const char *bp = strstr(json, "\"bank_name\":\"");
+    if (bp) {
+        bp += 13;
+        int j = 0;
+        while (*bp && *bp != '"' && j < (int)sizeof(want) - 1) want[j++] = *bp++;
+        want[j] = '\0';
+    }
+    int bank = 0;
+    if (want[0]) {
+        for (int i = 1; i < inst->bank_count; i++)
+            if (strcmp(inst->banks[i].name, want) == 0) { bank = i; break; }
+    }
+    inst->cur_bank = bank;
+    nm_load_bank_files(inst);
+
     if (nm_json_get_number(json, "preset", &f) == 0) {
         int idx = (int)f;
-        if (idx >= 0 && idx < NM_FACTORY_COUNT) load_preset(inst, idx);
+        if (idx >= 0 && idx < nm_preset_count(inst)) load_preset(inst, idx);
     }
     if (nm_json_get_number(json, "octave_transpose", &f) == 0)
         inst->octave_transpose = (int)f;
@@ -1169,8 +1476,17 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     if (strcmp(key, "state") == 0) { restore_state(inst, val); return; }
     if (strcmp(key, "preset") == 0) {
         int idx = atoi(val);
-        if (idx >= 0 && idx < NM_FACTORY_COUNT && idx != inst->cur_preset)
+        if (idx >= 0 && idx < nm_preset_count(inst) && idx != inst->cur_preset)
             load_preset(inst, idx);
+        return;
+    }
+    if (strcmp(key, "bank_index") == 0) {
+        int idx = atoi(val);
+        /* The list the UI is selecting from came from a scan; re-scan so a
+         * folder added since then cannot make the index point elsewhere. */
+        nm_scan_banks(inst);
+        if (idx >= 0 && idx < inst->bank_count && idx != inst->cur_bank)
+            nm_switch_bank(inst, idx);
         return;
     }
 
@@ -1191,14 +1507,46 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "Noisemaker");
     if (strcmp(key, "state") == 0)
         return build_state(inst, buf, buf_len);
-    if (strcmp(key, "preset_name") == 0)
-        return snprintf(buf, buf_len, "%s",
-            (inst->cur_preset >= 0 && inst->cur_preset < NM_FACTORY_COUNT)
-                ? NM_FACTORY_BANK[inst->cur_preset].name : "Init");
+    if (strcmp(key, "preset_name") == 0) {
+        char nm[NM_MAX_RELPATH];
+        nm_preset_name(inst, inst->cur_preset, nm, sizeof(nm));
+        return snprintf(buf, buf_len, "%s", nm[0] ? nm : "Init");
+    }
     if (strcmp(key, "preset_count") == 0)
-        return snprintf(buf, buf_len, "%d", NM_FACTORY_COUNT);
+        return snprintf(buf, buf_len, "%d", nm_preset_count(inst));
     if (strcmp(key, "preset") == 0)
         return snprintf(buf, buf_len, "%d", inst->cur_preset < 0 ? 0 : inst->cur_preset);
+
+    /* ---- banks ----
+     * bank_list rescans on every read, so a folder copied onto the device is
+     * simply there the next time the selector opens -- no Rescan action, and
+     * no way for the list to be stale. */
+    if (strcmp(key, "bank_list") == 0) {
+        nm_scan_banks(inst);
+        int n = snprintf(buf, buf_len, "[");
+        for (int i = 0; i < inst->bank_count && n < buf_len - 80; i++) {
+            const char *nm = inst->banks[i].name[0] ? inst->banks[i].name : "(loose)";
+            n += snprintf(buf + n, buf_len - n, "%s\"", i ? "," : "");
+            /* Folder names are user data: escape what would break the JSON. */
+            for (const char *c = nm; *c && n < buf_len - 8; c++) {
+                if (*c == '"' || *c == '\\') n += snprintf(buf + n, buf_len - n, "\\%c", *c);
+                else if ((unsigned char)*c < 0x20) n += snprintf(buf + n, buf_len - n, " ");
+                else n += snprintf(buf + n, buf_len - n, "%c", *c);
+            }
+            n += snprintf(buf + n, buf_len - n, "\"");
+        }
+        n += snprintf(buf + n, buf_len - n, "]");
+        return n;
+    }
+    if (strcmp(key, "bank_index") == 0)
+        return snprintf(buf, buf_len, "%d", inst->cur_bank);
+    if (strcmp(key, "bank_count") == 0)
+        return snprintf(buf, buf_len, "%d", inst->bank_count);
+    if (strcmp(key, "bank_name") == 0)
+        return snprintf(buf, buf_len, "%s",
+            (inst->cur_bank >= 0 && inst->cur_bank < inst->bank_count &&
+             inst->banks[inst->cur_bank].name[0])
+                ? inst->banks[inst->cur_bank].name : "Factory");
     if (strcmp(key, "octave_transpose") == 0)
         return snprintf(buf, buf_len, "%d", inst->octave_transpose);
     if (strcmp(key, "editor") == 0)

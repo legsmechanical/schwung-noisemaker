@@ -21,6 +21,11 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
     # knobs resolve against; a stale copy = silently dead knob destinations.
     if command -v node >/dev/null 2>&1; then
         node "$REPO_ROOT/tools/gen_module_json.mjs" || exit 1
+        # The importer resolves a preset's XML attributes to engine slots
+        # through this table. Hand-maintained, it would drift from Params.h
+        # without failing to compile -- and every parameter past the drift
+        # point would import into the WRONG slot, silently.
+        node "$REPO_ROOT/tools/gen_param_names.mjs" || exit 1
         # Same reasoning for the Wave HUD's anchor table: position + name are
         # the wrapper's, and a hand-copy would let the HUD name the wrong sound.
         node "$REPO_ROOT/tools/gen_wave_anchors.mjs" || exit 1

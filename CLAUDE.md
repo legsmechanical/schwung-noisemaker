@@ -154,6 +154,8 @@ their exact original feedback and merely read out in gain space.
 ./scripts/install.sh                    # scp + md5-verify + restart_move.sh   (SKIP_RESTART=1 to copy only)
 MOVE_HOST=root@172.16.254.1 ./scripts/install.sh    # tether
 ./build/macro_test                      # off-device macro tests  (see NOTE below)
+./build/import_test  <corpus_dir>       # .noisemakerpreset parser + name table
+./build/bank_test    [corpus_dir]       # imported banks, end-to-end through set/get_param
 build/nm_render --state P.json --analyze --set k=v   # render/measure one patch
 node tools/render_canvas.mjs out.png    # every bank + the macro HUD states
 ```
@@ -182,6 +184,54 @@ node tools/render_canvas.mjs out.png    # every bank + the macro HUD states
 - **There are no authored presets.** The module ships the 256 TAL factory programs
   and nothing else. Two generated banks (JG, 146; SW, 64) were built and removed on
   2026-07-29 — see the note below before writing a third.
+
+## Imported preset banks
+
+Users drop folders of loose `.noisemakerpreset` files under
+**`/data/UserData/schwung/preset-banks/noisemaker/`**. Each immediate child folder
+becomes a bank on the root preset path (`Preset Bank` level → `bank_list` /
+`bank_index`), gathering presets from its own subfolders recursively; loose presets
+directly in the root form one `(loose)` bank.
+
+The root is deliberately **outside the module directory** — a catalog update extracts
+a tarball over `<module_dir>`, and an uninstall removes it, either of which would
+delete the user's imports. It is also not the host's `presets/<module-id>/` store,
+which holds module-preset JSON.
+
+**Nothing is converted or cached.** Listing banks is a `readdir`; opening a bank is a
+`readdir`; selecting a preset parses exactly one ~4 KB file (`src/dsp/nm_import.h`).
+There is no import step, no cache to invalidate, and no way for the view to drift from
+disk. `bank_list` rescans on every read, so a folder copied onto the device is simply
+there next time the selector opens. The displayed preset name is the **file stem**, so
+listing a bank costs no file reads.
+
+### Import traps (all measured over a 442-preset corpus; all silent if wrong)
+
+- **The filtertype encoding depends on the preset version.** Pre-1.7 presets encode an
+  index into a 10-item filter list (`k/9`); the engine has 12 (`k/11`). Re-encode only
+  when `version < 1.65`. v1.6 files fit `k/9` with zero residual, v1.7 fit `k/11`.
+- **⚠ Never compare the version as a string.** 16 corpus files carry
+  `version="1.6999999999999999556"`; `startswith("1.6")` gives every one of them the
+  wrong filter. Parse as float.
+- **⚠ TAL ships two attribute vocabularies, differing in CASE.** 121 files write
+  `delayfactorR`, `envelopeOneShot`, `lfo1Phase`, `lfo2Phase`. The lookup is
+  case-insensitive; an exact match drops four real parameters per preset.
+- **`velocityfilter` is a rename of `velocitycutoff`**, not an unknown — they never
+  co-occur. Aliased in `param_names.h`.
+- **⚠ `<program` prefix-matches `<programs>`**, the container. Match the tag followed
+  by whitespace, or every value imports as zero while the parse "succeeds".
+- **40 corpus presets have an empty `<splinePoints>`.** They get a synthesized neutral
+  flat shape — a shapeless preset would otherwise inherit the *previously loaded*
+  patch's envelope.
+- **⚠ The `(loose)` bank is the ROOT**, whose subfolders are the other banks. It must
+  not recurse: it did once, and swallowed the whole library a second time (897 presets
+  from 449 files). `bank_test` pins total-across-banks == files-on-disk.
+- The bank is saved in `state` **by name**, never by index — indices shift the moment a
+  folder is added or removed. A bank that has gone missing falls back to Factory.
+
+`src/dsp/param_names.h` is **generated** from the engine enum by
+`tools/gen_param_names.mjs` (wired into `build.sh`); a hand-maintained copy would drift
+from `Params.h` and silently import every later parameter into the wrong slot.
 
 ## ⚠ Before generating another preset bank
 
