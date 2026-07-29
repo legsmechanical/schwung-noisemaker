@@ -12,9 +12,34 @@ Audio Line).
   as a tempo-synced modulation source
 - Two tempo-syncable LFOs; velocity and pitch-wheel routing
 - Chorus, reverb, and delay
-- **256 factory presets**
+- **256 factory presets**, plus **import your own preset banks** — see below
+- Four **macros** (oscillator Wave sweep, Osc 2 pitch, filter/amp envelope time)
+  with on-screen value readouts
 - On-device canvas **Editor** with TAL-style panel grouping, a live
   filter-response curve, and oscillator/LFO waveform displays
+
+## Importing preset banks
+
+Copy folders of loose `.noisemakerpreset` files (the format TAL NoiseMaker
+itself saves) to:
+
+```
+/data/UserData/schwung/preset-banks/noisemaker/
+```
+
+Each folder becomes a bank under **Preset Bank** on the module's root page,
+gathering presets from its own subfolders — so a pack laid out as
+`MyPack/BASS`, `MyPack/LEAD`, `MyPack/PAD` arrives as one `MyPack` bank.
+Presets sitting loose in the root form a `(loose)` bank.
+
+There is no import step and nothing to refresh: the list is rebuilt each time
+you open the selector, so a folder copied over (schwung-manager's file browser
+at `http://move.local:7700` is the easy way) is simply there. Presets are read
+straight from disk, one file at a time, and the folder is **outside** the
+module directory so updating or reinstalling the module never touches it.
+
+Both preset formats TAL has shipped are handled, including the older 10-item
+filter encoding used before NoiseMaker 1.7.
 
 ## Install
 
@@ -36,11 +61,16 @@ src/
     EnvelopeEditor/         # spline mod-envelope, ported JUCE-free (juce_shim.h)
     factory_bank.h          # 256 factory presets (generated)
     factory_splines.h       # per-preset envelope shapes (generated)
+    nm_import.h             # .noisemakerpreset parser (imported banks)
+    param_names.h           # XML attr -> engine slot (generated from Params.h)
 tools/
   gen_factory_bank.mjs      # ProgramChunk XML -> factory_bank.h
   gen_factory_splines.mjs   # <splinePoints> -> factory_splines.h
+  gen_param_names.mjs       # Params.h enum -> param_names.h
   decode_program_chunk.mjs  # hex ProgramChunk -> plain XML
+  nm_render.cpp             # off-device render / analysis of one patch
   bench_render.cpp          # on-device CPU benchmark
+tests/{macro_test,delay_fb_test,import_test,bank_test}.cpp
 scripts/{build.sh,Dockerfile,install.sh}
 ```
 
@@ -60,6 +90,22 @@ To regenerate the on-device Editor after editing `src/canvas.config.js`:
 ```bash
 node ../schwung-canvaskit/build.mjs src/canvas.config.js src/canvas.js
 ```
+
+### Tests
+
+`build.sh` does **not** build the tests — each carries its own `g++` line in its
+header comment, and they all need `src/dsp/Engine/Lfo.cpp` (the engine's only
+non-header file). Running a stale test binary reports a green suite that proves
+nothing.
+
+```bash
+g++ -O1 -std=c++14 -fpermissive -Wno-write-strings -Isrc/dsp -Isrc/dsp/Engine \
+    tests/macro_test.cpp src/dsp/Engine/Lfo.cpp -o build/macro_test && ./build/macro_test
+```
+
+`import_test` and `bank_test` take an optional directory of `.noisemakerpreset`
+files to run against a real corpus; `bank_test` additionally needs
+`-DNM_BANK_ROOT='"/some/scratch/dir"'` so it never touches a real install.
 
 ## Port notes
 
