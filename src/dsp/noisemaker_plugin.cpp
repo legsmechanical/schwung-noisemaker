@@ -400,13 +400,13 @@ static float combo_idx_to_norm(int idx, int n);
  * Note this is a POWER law in u, not an exponential in v — Echidna's trick of
  * adding ln(N)/b to the normalized value does NOT transfer here.
  *
- * Two boundaries fall out of the f term, which dominates above v ~ 0.68:
- *   - N < 1 at low v: v' goes negative, clamps to 0, and you sit on the
- *     engine's 3-5 ms floor. Graceful.
- *   - N > 1 at high v: no solution exists once (f + c*u^p)/N <= f. The engine
- *     physically cannot run slower, so we clamp to v' = 1 and accept a
- *     smaller-than-N stretch. Stages saturate at slightly different v, so a
- *     large stretch applied to an already-long envelope will de-proportion it.
+ * D and R use the plain knob SHIFT below and never touch this math. ATTACK
+ * does use it (nm_env_time_shift_attack) to hold Echidna's attack floor, and
+ * the boundaries of the inversion matter there:
+ *   - N < 1: v' goes negative, clamps to 0 = the engine's fastest attack.
+ *   - N > 1: no solution exists once (f + c*u^p)/N <= f, since the f term
+ *     dominates above v ~ 0.68 and the engine physically cannot run slower.
+ *     Clamp to v' = 1 and accept a smaller-than-N stretch.
  */
 /* Macro knob (normalized, 0.5 = centre) -> a SHIFT of the envelope knob
  * positions themselves, NOT a multiplier on the resulting times.
@@ -427,7 +427,10 @@ static float combo_idx_to_norm(int idx, int n);
  *
  * Trade worth knowing: this does NOT preserve A:D:R proportions the way a true
  * ratio would, because the underlying time law is non-linear. That is the right
- * trade -- "all the sliders move together" is how the control reads. */
+ * trade -- "all the sliders move together" is how the control reads.
+ *
+ * ⚠ Applies to DECAY and RELEASE only. Attack goes through
+ * nm_env_time_shift_attack below; see there for why. */
 static float nm_env_time_shift(float v, float m) {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
@@ -437,6 +440,68 @@ static float nm_env_time_shift(float v, float m) {
     if (d > 0.0f) return v + d * (1.0f - v);
     if (d < 0.0f) return v + d * v;
     return v;                      /* exact pass-through at the detent */
+}
+
+/* ---- Attack: the shift, but with Echidna's TIME-INDEPENDENT attack floor ---
+ * The raw shift is wrong for attack. Measured on a pluck (aenv_a=0, d=40, s=0,
+ * r=20): the attack ran 21 ms at the detent, 1001 ms at aenv_time=75 and
+ * 1096 ms at 100 -- so reaching for a longer release turned every pluck into a
+ * swell. Echidna refuses to do that on purpose: Adsr::recompute scales only the
+ * time ABOVE atkFloorSec_ (rig 2026-07-07, and its filter EG floors at the
+ * fastest LUT knot for the same reason -- HW's filter snaps open <8 ms at every
+ * filter TIME).
+ *
+ * There is a second, sharper reason here that Echidna does not have.
+ * `Adsr::getValueFasterAttack()` returns 1.0 immediately when `attackReal ==
+ * 0.0f` EXACTLY -- an instant-snap path, used by the filter envelope
+ * (SynthVoice.h:164) and the free AD (AdsrHandler.h:111). Shifting attack off
+ * zero does not merely slow it, it LEAVES that mode. Pinning v=0 is therefore
+ * required, not just desirable.
+ *
+ * So attack takes Echidna's rule, driven by whatever ratio the shift implies
+ * for this segment (t is proportional to 1/rate, so k cancels):
+ *
+ *     N = rate(v) / rate(v_shift)                  what the shift did
+ *     t_final = t_floor + (t_base - t_floor) * N   only the excess scales
+ *
+ * with t_floor = the engine's own fastest attack, rate(0) -- no magic
+ * constant needed, and it makes v=0 a fixed point exactly (t_base == t_floor),
+ * which is what protects the instant-snap path. */
+#define NM_ENV_F     0.0003f       /* the f term, shared by all three stages */
+#define NM_ATK_C     7.0f          /* scaleValueAttack: powf(u, 24) * 7 */
+#define NM_ATK_P     24.0f
+
+static inline float nm_atk_rate(float v) {          /* k omitted; it cancels */
+    const float u = 1.0f - v * 0.5f;
+    return NM_ENV_F + NM_ATK_C * powf(u, NM_ATK_P);
+}
+
+static inline float nm_atk_rate_to_v(float r) {
+    const float x = (r - NM_ENV_F) / NM_ATK_C;
+    if (x >= 1.0f) return 0.0f;    /* at or past the fastest the engine has */
+    if (x <= 0.0f) return 1.0f;    /* slower than the f term allows; saturate */
+    const float u = powf(x, 1.0f / NM_ATK_P);
+    float v = 2.0f * (1.0f - u);
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    return v;
+}
+
+static float nm_env_time_shift_attack(float v, float m) {
+    const float vs = nm_env_time_shift(v, m);
+    if (vs == v) return v;                       /* detent: exact pass-through */
+
+    const float rBase  = nm_atk_rate(v);
+    const float rShift = nm_atk_rate(vs);
+    const float rFloor = nm_atk_rate(0.0f);      /* fastest attack the engine has */
+
+    const float N      = rBase / rShift;         /* stretch the shift implies */
+    const float tFloor = 1.0f / rFloor;
+    const float tBase  = 1.0f / rBase;
+
+    float tFinal = tFloor + (tBase - tFloor) * N;
+    if (tFinal < tFloor) tFinal = tFloor;        /* never faster than the floor */
+    return nm_atk_rate_to_v(1.0f / tFinal);
 }
 
 /* ======================================================================== *
@@ -642,11 +707,11 @@ static void apply_engine(nm_instance_t *inst, int idx, float v) {
          * unscaled value stays in inst->eng[] (set above), so the macro never
          * consumes the base knob and load_preset gets the scaling for free.
          * Sustain is a LEVEL, not a time — deliberately not scaled. */
-        case FILTERATTACK:   e->setFilterAttack (nm_env_time_shift(v, inst->eng[NM_M_FENV_T])); break;
+        case FILTERATTACK:   e->setFilterAttack (nm_env_time_shift_attack(v, inst->eng[NM_M_FENV_T])); break;
         case FILTERDECAY:    e->setFilterDecay  (nm_env_time_shift(v, inst->eng[NM_M_FENV_T])); break;
         case FILTERSUSTAIN:  e->setFilterSustain(v); break;
         case FILTERRELEASE:  e->setFilterRelease(nm_env_time_shift(v, inst->eng[NM_M_FENV_T])); break;
-        case AMPATTACK:      e->setAmpAttack    (nm_env_time_shift(v, inst->eng[NM_M_AENV_T])); break;
+        case AMPATTACK:      e->setAmpAttack    (nm_env_time_shift_attack(v, inst->eng[NM_M_AENV_T])); break;
         case AMPDECAY:       e->setAmpDecay     (nm_env_time_shift(v, inst->eng[NM_M_AENV_T])); break;
         case AMPSUSTAIN:     e->setAmpSustain(v); break;
         case AMPRELEASE:     e->setAmpRelease   (nm_env_time_shift(v, inst->eng[NM_M_AENV_T])); break;

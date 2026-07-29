@@ -1,7 +1,11 @@
 /* Off-device checks for the Wave / envelope-time macros.
  *
  *   g++ -O1 -std=c++14 -fpermissive -Wno-write-strings \
- *       -Isrc/dsp -Isrc/dsp/Engine tests/macro_test.cpp -o build/macro_test && ./build/macro_test
+ *       -Isrc/dsp -Isrc/dsp/Engine tests/macro_test.cpp src/dsp/Engine/Lfo.cpp \
+ *       -o build/macro_test && ./build/macro_test
+ *
+ * (Lfo.cpp is required -- it is the engine's only non-header file. scripts/
+ * build.sh does NOT build the tests; run the line above by hand.)
  *
  * Test 1 measures the ACTUAL Adsr tick loop rather than trusting the algebra:
  * it runs the envelope at the base knob value and at the macro-transformed
@@ -90,6 +94,65 @@ static void test_env_time() {
         }
     }
     printf("  gate release %.0f -> %.0f samples across the macro\n", tGate, tMax);
+}
+
+/* ---- Test 1b: the attack floor -------------------------------------- */
+
+/* Samples for the attack to climb to 0.9. */
+static double measure_attack(float v) {
+    Adsr e(44100.0f);
+    e.setAttack(v); e.setDecay(1.0f); e.setSustain(1.0f); e.setRelease(0.0f);
+    e.resetAll();
+    long n = 0;
+    while (n < 40000000) { n++; if (e.tick(true) >= 0.9f) break; }
+    return (double)n;
+}
+
+static void test_env_time_attack() {
+    printf("Test 1b: attack floor (Echidna's rule)\n");
+
+    /* THE point of the floor. A pluck must stay a pluck at every macro
+     * setting -- and v==0 must come back BIT-EXACT, because
+     * Adsr::getValueFasterAttack() only takes its instant-snap path when
+     * attackReal == 0.0f exactly (filter EG + free AD depend on it). */
+    for (int i = 0; i <= 100; i++) {
+        float r = nm_env_time_shift_attack(0.0f, i / 100.0f);
+        check(r == 0.0f, "attack 0 is a fixed point at every macro value");
+    }
+
+    /* Detent is still an exact pass-through for every base value. */
+    for (int i = 0; i <= 100; i++) {
+        float v = i / 100.0f;
+        check(nm_env_time_shift_attack(v, 0.5f) == v, "detent passes attack through unchanged");
+    }
+
+    /* The floor must not neuter the control: an attack that IS long still
+     * stretches, and still shortens. */
+    check(nm_env_time_shift_attack(0.5f, 1.0f) > 0.5f, "a long attack still stretches");
+    check(nm_env_time_shift_attack(0.5f, 0.0f) < 0.5f, "a long attack still shortens");
+
+    /* Monotonic in the macro, and in range. */
+    for (int b = 0; b <= 10; b++) {
+        float prev = -1.0f;
+        for (int i = 0; i <= 100; i++) {
+            float r = nm_env_time_shift_attack(b / 10.0f, i / 100.0f);
+            check(r >= prev - 1e-6f, "attack shift is non-decreasing in the macro");
+            check(r >= -1e-6f && r <= 1.0f + 1e-6f, "attack shift stays in 0..1");
+            prev = r;
+        }
+    }
+
+    /* Measured on the real Adsr: the pluck case must not blow up the way the
+     * plain shift did (21 ms -> ~1 s at macro 75 before the floor). */
+    double aPluck  = measure_attack(nm_env_time_shift_attack(0.0f, 1.0f));
+    double aPluck0 = measure_attack(0.0f);
+    check(aPluck == aPluck0, "max macro leaves a zero attack untouched");
+
+    double aLongBase = measure_attack(0.5f);
+    double aLongMax  = measure_attack(nm_env_time_shift_attack(0.5f, 1.0f));
+    check(aLongMax > aLongBase * 1.5, "max macro meaningfully stretches a long attack");
+    printf("  pluck attack %.0f samples at every macro; mid attack %.0f -> %.0f\n",
+           aPluck0, aLongBase, aLongMax);
 }
 
 /* ---- Test 2: wave macro sweep --------------------------------------- */
@@ -265,6 +328,7 @@ static void test_wave_sweep() {
 
 int main() {
     test_env_time();
+    test_env_time_attack();
     test_wave_sweep();
     printf(g_fail ? "\n%d FAILURE(S)\n" : "\nall checks passed\n", g_fail);
     return g_fail ? 1 : 0;

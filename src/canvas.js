@@ -930,8 +930,9 @@ function tune2Hud(ctx, cells, s) {
   hudCaret(ctx, Math.round(sx + (sw * Math.max(0, Math.min(24, semi))) / 24), sy - 9);
 }
 
-/* FEG / AEG: these are envelope TIME MULTIPLIERS, so show the multiplier.
- * MUST match nm_env_time_ratio() in the wrapper. */
+/* FEG / AEG: the envelope-time macros. These are NOT multipliers -- the
+ * wrapper drags the A/D/R knob positions instead (nm_env_time_shift), so the
+ * readout is a signed shift, not a ratio. See the body comment. */
 function envTimeHud(ctx, cells, s) {
   const cell = s.lastKnob >= 0 ? cells[s.lastKnob] : null;
   if (!cell || (cell.key !== "fenv_time" && cell.key !== "aenv_time")) return;
@@ -940,14 +941,18 @@ function envTimeHud(ctx, cells, s) {
 
   /* Shows the SHIFT, not a ratio: the macro drags the A/D/R sliders together
    * (see nm_env_time_shift in the wrapper), so a multiplier readout would be
-   * a lie -- and would read "x6" on a gate envelope that cannot move at all. */
+   * a lie -- and would read "x6" on a gate envelope that cannot move at all.
+   * ATTACK is the exception: it holds a time-independent floor
+   * (nm_env_time_shift_attack), so a zero attack stays instant at any setting
+   * and the shift shown here applies fully only to D and R. */
   const d = Math.round((raw - 50) * 2);
   ctx.print(body.x + 2, body.y, d === 0 ? "NEUTRAL" : (d > 0 ? "+" : "") + d, 1);
   const tag = raw === 50 ? "" : (raw < 50 ? "SHORTER" : "LONGER");
   if (tag) ctx.print(body.x + body.w - 2 - ctx.measureText(tag), body.y, tag, 1);
 
-  /* Centre-out bar: the detent is x1, either side is a constant ratio per
-   * degree of travel (the mapping is exponential about the centre). */
+  /* Centre-out bar: fills from the detent toward whichever end you are on.
+   * The travel is LINEAR in the shift -- d = (raw-50)*2, applied to the knob
+   * travel remaining -- so the bar length is the shift amount, not a ratio. */
   const sx = body.x + 3, sw = body.w - 6, sy = body.y + body.h - 6, mid = sx + Math.round(sw / 2);
   ctx.drawRect(sx, sy, sw, 5, 1);
   ctx.fillRect(mid, sy - 2, 1, 2, 1);            // centre detent mark
@@ -1127,7 +1132,8 @@ const CONFIG = {
     lfo1_wave: 0, lfo1_rate: 30, lfo1_amount: 0, lfo1_phase: 0, lfo1_dest: 0, lfo1_sync: 0, lfo1_keytrig: 0,
     lfo2_wave: 0, lfo2_rate: 30, lfo2_amount: 0, lfo2_phase: 0, lfo2_dest: 0, lfo2_sync: 0, lfo2_keytrig: 0,
     voices: 6, portamento: 0, porta_mode: 0, vel_vol: 0, vel_env: 0, vel_cut: 0, pw_cutoff: 0, pw_pitch: 20,
-    chorus1: 0, chorus2: 0, bitcrush: 0, reverb_wet: 0, reverb_decay: 0, reverb_pre: 0, reverb_hi: 100, reverb_lo: 0,
+    /* bitcrush is INVERTED: 100 == OFF, 0 == 1-bit destruction. Not a typo. */
+    chorus1: 0, chorus2: 0, bitcrush: 100, reverb_wet: 0, reverb_decay: 0, reverb_pre: 0, reverb_hi: 100, reverb_lo: 0,
     delay_wet: 0, delay_time: 30, delay_fb: 40, delay_sync: 0, delay_fac_l: 0, delay_fac_r: 0, delay_hi: 100, delay_lo: 0,
     env_dest: 0, env_amt: 0, env_speed: 0,
   },

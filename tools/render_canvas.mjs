@@ -76,7 +76,8 @@ function SEED() {
     filter_type: 1, cutoff: 55, resonance: 12, keyfollow: 30, filter_env: 35, highpass: 0, vel_cut: 0, pw_cutoff: 10,
     fenv_a: 0, fenv_d: 45, fenv_s: 30, fenv_r: 30, vel_env: 0,
     aenv_a: 0, aenv_d: 50, aenv_s: 85, aenv_r: 28, vel_vol: 0, volume: 50, portamento: 0, voices: 6,
-    lfo1_wave: 0, lfo1_rate: 30, lfo1_amount: 0, lfo1_dest: 0, lfo1_sync: 0, lfo1_keytrig: 0, lfo1_phase: 0, bitcrush: 0,
+    /* bitcrush is INVERTED: 100 == OFF, 0 == 1-bit destruction. Not a typo. */
+    lfo1_wave: 0, lfo1_rate: 30, lfo1_amount: 0, lfo1_dest: 0, lfo1_sync: 0, lfo1_keytrig: 0, lfo1_phase: 0, bitcrush: 100,
     lfo2_wave: 0, lfo2_rate: 30, lfo2_amount: 0, lfo2_dest: 0, lfo2_sync: 0, lfo2_keytrig: 0, lfo2_phase: 0,
     free_a: 0, free_d: 40, free_amt: 0, free_dest: 0, pw_pitch: 20, porta_mode: 0,
     wave: 0, tune2: 0, fenv_time: 50, aenv_time: 50,
@@ -114,7 +115,8 @@ frames.push({ fb: renderPage(0, 1, { tune2: 0 }),   name: "HUD: OSC2 PITCH raw 0
 frames.push({ fb: renderPage(0, 1, { tune2: 5 }),   name: "HUD: OSC2 PITCH raw 5 = UNISON +12C (fine window)" });
 frames.push({ fb: renderPage(0, 1, { tune2: 74 }),  name: "HUD: OSC2 PITCH raw 74 = +7 ST" });
 frames.push({ fb: renderPage(0, 1, { tune2: 132 }), name: "HUD: OSC2 PITCH raw 132 = +1 OCT +10C" });
-frames.push({ fb: renderPage(0, 5, { fenv_time: 68 }),  name: "HUD: FILTER TIME = x1.91" });
+frames.push({ fb: renderPage(0, 5, { fenv_time: 68 }),  name: "HUD: FILTER TIME +36 LONGER (a shift, not a ratio)" });
+frames.push({ fb: renderPage(0, 6, { aenv_time: 22 }),  name: "HUD: AMP TIME -56 SHORTER" });
 
 /* Delay feedback HUD (bank 12 = Delay; knob 2 = Fbk, the 0..200 gain wire). */
 frames.push({ fb: renderPage(12, 2, { delay_fb: 25 }),  name: "HUD: DELAY FBK x0.25 (short)" });
