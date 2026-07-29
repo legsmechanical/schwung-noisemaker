@@ -1,7 +1,7 @@
 /* End-to-end checks for imported preset banks, off device.
  *
  *   g++ -O1 -std=c++14 -fpermissive -Wno-write-strings \
- *       -Isrc/dsp -Isrc/dsp/Engine -DNM_BANK_ROOT='"/tmp/nm_banks"' \
+ *       -Isrc/dsp -Isrc/dsp/Engine -DNM_TEST_MODULE_DIR='"/tmp/nm_test_module"' \
  *       tests/bank_test.cpp src/dsp/Engine/Lfo.cpp -o build/bank_test && ./build/bank_test
  *
  * (scripts/build.sh does NOT build tests -- run the line above by hand. The
@@ -20,11 +20,13 @@
 #include <unistd.h>
 #include <string>
 
-/* The module under test, with NM_BANK_ROOT pointed at our scratch tree. */
 #include "../src/dsp/noisemaker_plugin.cpp"
 
-#ifndef NM_BANK_ROOT
-#error "define NM_BANK_ROOT for the test"
+/* Banks live at <module_dir>/presets, and module_dir is just an argument to
+ * v2_create_instance -- so the test points the whole bank layer at a scratch
+ * tree by passing one, with no compile-time override. */
+#ifndef NM_TEST_MODULE_DIR
+#define NM_TEST_MODULE_DIR "/tmp/nm_test_module"
 #endif
 
 static int g_fail = 0, g_checks = 0;
@@ -118,14 +120,17 @@ static bool listEntriesWellFormed(const std::string &j, int expectCount) {
 }
 
 int main(int argc, char **argv) {
-    const char *ROOT = NM_BANK_ROOT;
-    printf("Bank tests (root = %s)\n", ROOT);
+    const char *MODDIR = NM_TEST_MODULE_DIR;
+    static char rootbuf[512];
+    snprintf(rootbuf, sizeof(rootbuf), "%s/%s", MODDIR, NM_BANK_SUBDIR);
+    const char *ROOT = rootbuf;
+    printf("Bank tests (module_dir = %s, bank root = %s)\n", MODDIR, ROOT);
 
     /* ---- build a scratch tree ------------------------------------------ */
-    rm_rf(ROOT);
+    rm_rf(MODDIR);
     mkdirs(ROOT);
 
-    void *inst = v2_create_instance(NULL, NULL);
+    void *inst = v2_create_instance(MODDIR, NULL);
     check(inst != NULL, "instance is created with an empty bank root");
     if (!inst) return 1;
 
@@ -314,7 +319,7 @@ int main(int argc, char **argv) {
     }
 
     v2_destroy_instance(inst);
-    rm_rf(ROOT);
+    rm_rf(MODDIR);
 
     printf("\n%s (%d checks, %d failed)\n",
            g_fail ? "FAILURES" : "all checks passed", g_checks, g_fail);

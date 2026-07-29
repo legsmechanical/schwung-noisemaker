@@ -21,10 +21,11 @@ Audio Line).
 ## Importing preset banks
 
 Copy folders of loose `.noisemakerpreset` files (the format TAL NoiseMaker
-itself saves) to:
+itself saves) into the module's own `presets/` folder on the device — the same
+place OB-Xd takes its `.fxb` banks:
 
 ```
-/data/UserData/schwung/preset-banks/noisemaker/
+/data/UserData/schwung/modules/sound_generators/noisemaker/presets/
 ```
 
 Each folder becomes a bank under **Preset Bank** on the module's root page,
@@ -35,8 +36,10 @@ Presets sitting loose in the root form a `(loose)` bank.
 There is no import step and nothing to refresh: the list is rebuilt each time
 you open the selector, so a folder copied over (schwung-manager's file browser
 at `http://move.local:7700` is the easy way) is simply there. Presets are read
-straight from disk, one file at a time, and the folder is **outside** the
-module directory so updating or reinstalling the module never touches it.
+straight from disk, one file at a time.
+
+Updating the module leaves your banks alone. **Uninstalling it deletes them**,
+since they live inside the module folder — keep a copy elsewhere if they matter.
 
 Both preset formats TAL has shipped are handled, including the older 10-item
 filter encoding used before NoiseMaker 1.7.
@@ -104,8 +107,9 @@ g++ -O1 -std=c++14 -fpermissive -Wno-write-strings -Isrc/dsp -Isrc/dsp/Engine \
 ```
 
 `import_test` and `bank_test` take an optional directory of `.noisemakerpreset`
-files to run against a real corpus; `bank_test` additionally needs
-`-DNM_BANK_ROOT='"/some/scratch/dir"'` so it never touches a real install.
+files to run against a real corpus. `bank_test` builds its own scratch module
+directory; point it somewhere harmless with
+`-DNM_TEST_MODULE_DIR='"/some/scratch/dir"'` so it never touches a real install.
 
 ## Port notes
 

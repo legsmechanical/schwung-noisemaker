@@ -362,17 +362,21 @@ static const int DEFAULT_PATCH_COUNT = (int)(sizeof(DEFAULT_PATCH) / sizeof(DEFA
  *  Imported preset banks
  * ========================================================================
  * A user drops folders of loose `.noisemakerpreset` files under
- * NM_BANK_ROOT; each immediate child folder becomes a selectable bank,
+ * <module_dir>/presets; each immediate child folder becomes a selectable bank,
  * gathering presets from its own subfolders recursively (the TAL packs in the
  * wild are one folder per author with BASS/LEAD/PAD/... inside). Loose presets
  * sitting directly in the root become one bank named after the root.
  *
- * The root is deliberately OUTSIDE the module directory. obxd keeps its banks
- * in <module_dir>/presets, which works until a catalog update extracts a new
- * tarball over that directory, or an uninstall removes it -- either takes the
- * user's own imports with it. It is also not the host's own
- * presets/<module-id>/ store, which holds module-preset JSON and is walked by
- * the host's browser.
+ * <module_dir>/presets is obxd's convention (it scans the same directory for
+ * .fxb banks) and matching it is deliberate: one place to look across the
+ * fleet. It is NOT the host's presets/<module-id>/ store, which holds
+ * module-preset JSON and is walked by the host's own browser.
+ *
+ * ⚠ A module UNINSTALL deletes this directory along with the module
+ * (store_utils.mjs removeModule -> host_remove_dir). An UPDATE does not:
+ * installModule extracts the tarball over the directory without removing it
+ * first, so imported banks survive updates. Say so in the docs -- an earlier
+ * version of this comment claimed updates wiped it, which is false.
  *
  * NOTHING IS CONVERTED OR CACHED. Building the bank list is a readdir of the
  * root; opening a bank is a readdir of that folder; selecting a preset parses
@@ -386,11 +390,10 @@ static const int DEFAULT_PATCH_COUNT = (int)(sizeof(DEFAULT_PATCH) / sizeof(DEFA
  * inside. That is what the user sees in their folder, it sorts the way their
  * folder sorts, and it means listing a bank costs no file reads at all.
  */
-/* Overridable so the off-device test can point the whole bank layer at a
- * temporary tree; the device never defines it. */
-#ifndef NM_BANK_ROOT
-#define NM_BANK_ROOT        "/data/UserData/schwung/preset-banks/noisemaker"
-#endif
+/* The bank root is <module_dir>/presets, resolved per instance at create time
+ * (inst->bank_root) -- so a test simply passes its own module_dir to
+ * v2_create_instance, with no compile-time override needed. */
+#define NM_BANK_SUBDIR      "presets"
 #define NM_PRESET_EXT       ".noisemakerpreset"
 #define NM_MAX_BANKS        64
 #define NM_MAX_BANK_PRESETS 512
@@ -419,6 +422,7 @@ typedef struct {
                                  // summed with the tune2 macro, not a param
 
     /* ---- banks ---- */
+    char        bank_root[512];  // <module_dir>/presets; "" disables imports
     nm_bank_t   banks[NM_MAX_BANKS];
     int         bank_count;
     int         cur_bank;        // 0 == factory
@@ -1009,8 +1013,9 @@ static void nm_bank_dir(const nm_instance_t *inst, int bank, char *out, int len)
     out[0] = '\0';
     if (bank <= 0 || bank >= inst->bank_count) return;
     const nm_bank_t *b = &inst->banks[bank];
-    if (b->name[0] == '\0') snprintf(out, len, "%s", NM_BANK_ROOT);
-    else                    snprintf(out, len, "%s/%s", NM_BANK_ROOT, b->name);
+    if (!inst->bank_root[0]) return;
+    if (b->name[0] == '\0') snprintf(out, len, "%s", inst->bank_root);
+    else                    snprintf(out, len, "%s/%s", inst->bank_root, b->name);
 }
 
 /* Rebuild banks[] from the filesystem. Cheap (one or two readdirs, no file
@@ -1027,14 +1032,14 @@ static void nm_scan_banks(nm_instance_t *inst) {
     snprintf(f->name, sizeof(f->name), "Factory");
     f->is_factory = 1;
 
-    DIR *d = opendir(NM_BANK_ROOT);
+    DIR *d = inst->bank_root[0] ? opendir(inst->bank_root) : NULL;
     if (d) {
         int loose = 0;
         struct dirent *e;
         while ((e = readdir(d)) != NULL && inst->bank_count < NM_MAX_BANKS) {
             if (e->d_name[0] == '.') continue;      /* . .. and dotfiles */
             char p[512];
-            snprintf(p, sizeof(p), "%s/%s", NM_BANK_ROOT, e->d_name);
+            snprintf(p, sizeof(p), "%s/%s", inst->bank_root, e->d_name);
             if (nm_is_dir(p)) {
                 nm_bank_t *b = &inst->banks[inst->bank_count++];
                 snprintf(b->name, sizeof(b->name), "%s", e->d_name);
@@ -1327,6 +1332,11 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->cur_bank = 0;
     inst->bank_files = NULL;
     inst->bank_file_count = 0;
+    /* Imported banks live beside the module, matching obxd. With no
+     * module_dir there is nowhere to look and imports stay disabled. */
+    if (inst->module_dir[0])
+        snprintf(inst->bank_root, sizeof(inst->bank_root), "%s/%s",
+                 inst->module_dir, NM_BANK_SUBDIR);
     nm_scan_banks(inst);
 
     inst->synth = new SynthEngine((float)MOVE_SAMPLE_RATE);

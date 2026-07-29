@@ -21,11 +21,11 @@ fi
 
 echo "=== Installing Noisemaker Module -> $MOVE_HOST ==="
 ssh "$MOVE_HOST" "mkdir -p $DEST"
-# Preset-bank import root. Deliberately OUTSIDE $DEST: a catalog update
-# extracts a tarball over the module dir and an uninstall removes it, either of
-# which would take the user's imported banks with it. Created here (not by the
-# module) so there is an obvious empty folder to drop bank folders into.
-ssh "$MOVE_HOST" "mkdir -p /data/UserData/schwung/preset-banks/noisemaker && chmod a+rwx /data/UserData/schwung/preset-banks/noisemaker" || true
+# Preset-bank import root, matching obxd's convention ($DEST/presets). Created
+# here rather than by the module so there is an obvious folder to drop banks
+# into. A module UPDATE extracts over $DEST without removing it first, so
+# imported banks survive; an UNINSTALL deletes $DEST and takes them with it.
+ssh "$MOVE_HOST" "mkdir -p $DEST/presets && chmod a+rwx $DEST/presets" || true
 # Copy each file to a temp name then atomic mv -f. Scp'ing DIRECTLY over a live
 # dlopen'd dsp.so overwrites the mapped inode in place and wedges the host; the
 # temp+mv keeps the running module on its old inode and lands the new file

@@ -188,15 +188,21 @@ node tools/render_canvas.mjs out.png    # every bank + the macro HUD states
 ## Imported preset banks
 
 Users drop folders of loose `.noisemakerpreset` files under
-**`/data/UserData/schwung/preset-banks/noisemaker/`**. Each immediate child folder
-becomes a bank on the root preset path (`Preset Bank` level → `bank_list` /
-`bank_index`), gathering presets from its own subfolders recursively; loose presets
-directly in the root form one `(loose)` bank.
+**`<module_dir>/presets/`** — the same directory obxd scans for its `.fxb` banks.
+Each immediate child folder becomes a bank on the root preset path (`Preset Bank`
+level → `bank_list` / `bank_index`), gathering presets from its own subfolders
+recursively; loose presets directly in the root form one `(loose)` bank. The root is
+resolved per instance from the `module_dir` handed to `create_instance`
+(`inst->bank_root`), so a test just passes its own.
 
-The root is deliberately **outside the module directory** — a catalog update extracts
-a tarball over `<module_dir>`, and an uninstall removes it, either of which would
-delete the user's imports. It is also not the host's `presets/<module-id>/` store,
-which holds module-preset JSON.
+Not to be confused with the host's `presets/<module-id>/` store, which holds
+module-preset JSON and is walked by the host's own browser.
+
+⚠ **An uninstall deletes these; an update does not.** `store_utils.mjs`
+`installModule` extracts the tarball over the module directory *without* removing it
+first, so imported banks survive updates. `removeModule` calls `host_remove_dir` on
+the whole directory. An earlier version of this doc claimed updates wiped it — that
+was wrong, and it was the argument for putting the root elsewhere.
 
 **Nothing is converted or cached.** Listing banks is a `readdir`; opening a bank is a
 `readdir`; selecting a preset parses exactly one ~4 KB file (`src/dsp/nm_import.h`).
