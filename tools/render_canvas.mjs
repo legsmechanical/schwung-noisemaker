@@ -115,6 +115,10 @@ frames.push({ fb: renderPage(0, 1, { tune2: 0 }),   name: "HUD: OSC2 PITCH raw 0
 frames.push({ fb: renderPage(0, 1, { tune2: 5 }),   name: "HUD: OSC2 PITCH raw 5 = UNISON +12C (fine window)" });
 frames.push({ fb: renderPage(0, 1, { tune2: 74 }),  name: "HUD: OSC2 PITCH raw 74 = +7 ST" });
 frames.push({ fb: renderPage(0, 1, { tune2: 132 }), name: "HUD: OSC2 PITCH raw 132 = +1 OCT +10C" });
+/* Header while an ORDINARY knob is touched: it must show the FULL parameter
+ * name from PARAMS[] ("Cutoff"), not the cell's abbreviation ("Cut"). */
+frames.push({ fb: renderPage(4, 0),  name: "TOUCH: Filter knob 1 -> header reads FILTER TYPE (cell label is 'Type')" });
+frames.push({ fb: renderPage(9, 3),  name: "TOUCH: LFO2 knob 4 -> header reads LFO2 PHASE (cell label is 'Phs')" });
 frames.push({ fb: renderPage(0, 5, { fenv_time: 68 }),  name: "HUD: FILTER TIME +36 LONGER (a shift, not a ratio)" });
 frames.push({ fb: renderPage(0, 6, { aenv_time: 22 }),  name: "HUD: AMP TIME -56 SHORTER" });
 

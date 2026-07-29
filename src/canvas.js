@@ -744,6 +744,104 @@ const WAVE_GLYPHS = {
   "Pulse+Saw": ["pulse", "saw"], "Ring": ["ring"], "Sub Bass": ["saw", "sub"],
 };
 
+/* GENERATED from PARAMS[] by tools/gen_param_labels.mjs — DO NOT EDIT.
+ * The full parameter names the host menus use. Fed to CONFIG.paramNames so the
+ * canvas header shows "Cutoff" while the cell label stays "Cut".
+ *
+ * The kit can also resolve these at runtime from chain_params, but that read is
+ * deferred to the first knob touch and cached for the session -- and
+ * shadow_get_param returns null while the param bus is busy, which is exactly
+ * what a knob touch makes it. One unlucky read and every header falls back to
+ * the abbreviation until the module is reloaded, silently. Baking the map in
+ * takes that failure mode out of the path. */
+/* BEGIN GENERATED PARAM_NAMES */
+const PARAM_NAMES = {
+  "wave": "Wave",
+  "tune2": "Osc2 Pitch",
+  "fenv_time": "Filter Time",
+  "aenv_time": "Amp Time",
+  "volume": "Volume",
+  "highpass": "High Pass",
+  "osc1_wave": "Osc1 Wave",
+  "osc2_wave": "Osc2 Wave",
+  "osc1_vol": "Osc1 Level",
+  "osc2_vol": "Osc2 Level",
+  "osc3_vol": "Sub Level",
+  "osc_tune": "Master Tune",
+  "osc1_tune": "Osc1 Tune",
+  "osc2_tune": "Osc2 Tune",
+  "osc1_fine": "Osc1 Fine",
+  "osc2_fine": "Osc2 Fine",
+  "osc1_pw": "Osc1 PW",
+  "osc1_phase": "Osc1 Phase",
+  "osc2_phase": "Osc2 Phase",
+  "osc2_fm": "Osc2 FM",
+  "osc_sync": "Osc Sync",
+  "ringmod": "Ring Mod",
+  "detune": "Detune",
+  "bitcrush": "Bitcrusher",
+  "vintage": "Vintage",
+  "filter_type": "Filter Type",
+  "cutoff": "Cutoff",
+  "resonance": "Resonance",
+  "keyfollow": "Key Follow",
+  "filter_env": "Filter Env",
+  "filter_drive": "Filter Drive",
+  "fenv_a": "Filter Attack",
+  "fenv_d": "Filter Decay",
+  "fenv_s": "Filter Sustain",
+  "fenv_r": "Filter Release",
+  "aenv_a": "Amp Attack",
+  "aenv_d": "Amp Decay",
+  "aenv_s": "Amp Sustain",
+  "aenv_r": "Amp Release",
+  "lfo1_wave": "LFO1 Wave",
+  "lfo1_rate": "LFO1 Rate",
+  "lfo1_amount": "LFO1 Amount",
+  "lfo1_dest": "LFO1 Dest",
+  "lfo1_sync": "LFO1 Sync",
+  "lfo1_keytrig": "LFO1 KeyTrig",
+  "lfo1_phase": "LFO1 Phase",
+  "lfo2_wave": "LFO2 Wave",
+  "lfo2_rate": "LFO2 Rate",
+  "lfo2_amount": "LFO2 Amount",
+  "lfo2_dest": "LFO2 Dest",
+  "lfo2_sync": "LFO2 Sync",
+  "lfo2_keytrig": "LFO2 KeyTrig",
+  "lfo2_phase": "LFO2 Phase",
+  "free_a": "Env3 Attack",
+  "free_d": "Env3 Decay",
+  "free_amt": "Env3 Amount",
+  "free_dest": "Env3 Dest",
+  "vel_vol": "Vel > Vol",
+  "vel_env": "Vel > Env",
+  "vel_cut": "Vel > Cutoff",
+  "pw_cutoff": "Wheel > Cutoff",
+  "pw_pitch": "Bend Range",
+  "portamento": "Portamento",
+  "porta_mode": "Porta Mode",
+  "voices": "Voices",
+  "chorus1": "Chorus I",
+  "chorus2": "Chorus II",
+  "reverb_wet": "Reverb Wet",
+  "reverb_decay": "Reverb Decay",
+  "reverb_pre": "Reverb PreDly",
+  "reverb_hi": "Reverb HiCut",
+  "reverb_lo": "Reverb LoCut",
+  "delay_wet": "Delay Wet",
+  "delay_time": "Delay Time",
+  "delay_sync": "Delay Sync",
+  "delay_fac_l": "Delay 2x L",
+  "delay_fac_r": "Delay 2x R",
+  "delay_fb": "Delay Feedbk",
+  "delay_hi": "Delay HiCut",
+  "delay_lo": "Delay LoCut",
+  "env_amt": "Env Draw Amt",
+  "env_speed": "Env Draw Speed",
+  "env_dest": "Env Draw Dest",
+};
+/* END GENERATED PARAM_NAMES */
+
 /* GENERATED from NM_WAVE_STOPS by tools/gen_wave_anchors.mjs — DO NOT EDIT.
  * Position and name are the wrapper's to define; duplicating them by hand here
  * meant the HUD would silently lie the moment an anchor was re-ordered. */
@@ -1137,6 +1235,8 @@ const CONFIG = {
     delay_wet: 0, delay_time: 30, delay_fb: 40, delay_sync: 0, delay_fac_l: 0, delay_fac_r: 0, delay_hi: 100, delay_lo: 0,
     env_dest: 0, env_amt: 0, env_speed: 0,
   },
+
+  paramNames: PARAM_NAMES,
 
   testExports: { FILT, LDST1, LDST2, FDST, PMODE },
 };

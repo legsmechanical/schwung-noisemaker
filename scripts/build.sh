@@ -29,6 +29,9 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
         # Same reasoning for the Wave HUD's anchor table: position + name are
         # the wrapper's, and a hand-copy would let the HUD name the wrong sound.
         node "$REPO_ROOT/tools/gen_wave_anchors.mjs" || exit 1
+        # Full parameter names for the canvas header, from the same PARAMS[]
+        # table the host menus are built from.
+        node "$REPO_ROOT/tools/gen_param_labels.mjs" || exit 1
         if [ -f "$REPO_ROOT/../schwung-canvaskit/build.mjs" ]; then
             node "$REPO_ROOT/../schwung-canvaskit/build.mjs" \
                  "$REPO_ROOT/src/canvas.config.js" "$REPO_ROOT/src/canvas.js" || exit 1
@@ -85,8 +88,9 @@ chmod +x "dist/$ID/dsp.so"
 # This block is for loose Module-Preset JSON files that should travel WITH the
 # module. It is currently unused -- src/presets/ is absent -- but keep it: a
 # release is supposed to be able to carry presets. (What must never end up here
-# is third-party preset packs; those are user imports and live outside the
-# module dir entirely, under /data/UserData/schwung/preset-banks/noisemaker/.)
+# is third-party preset packs -- those are user imports. They land in the SAME
+# $DEST/presets folder on the device, but they are not ours to ship, and the
+# tarball must never overwrite what a user put there.)
 if [ -d "src/presets" ] && ls src/presets/* &>/dev/null; then
     mkdir -p "dist/$ID/presets"
     for f in src/presets/*; do cat "$f" > "dist/$ID/presets/$(basename "$f")"; done
