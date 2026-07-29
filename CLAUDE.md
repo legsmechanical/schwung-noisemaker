@@ -86,8 +86,8 @@ unfiltered and 3x louder — and the whole `>10` Moog branch carries that same
 - **LFO→pitch is ±48 SEMITONES × amount** (`LfoHandler{1,2}::getOsc1Pitch`
   returns `value * 48.0f * amount`, added straight to the note number in
   `Vco.h`). The smallest step the 0..100 integer wire can express is amount=1
-  = ±0.5 semitone; musical vibrato (±10–25 cents) is **unreachable**. The SW
-  preset bank bans the destination outright and `gen_presets.mjs` enforces it.
+  = ±0.5 semitone; musical vibrato (±10–25 cents) is **unreachable**. Treat the
+  destination as unusable for anything melodic.
 - **LFO2→Pan ignores amount entirely** — `getPan()` returns `value`, so it hard
   pans L/R at any depth you dial.
 - **`ENVELOPEEDITORAMOUNT` is squared** by the engine (`setAmount`), so it is
@@ -96,9 +96,9 @@ unfiltered and 3x louder — and the whole `>10` Moog branch carries that same
 **Bitcrusher is INVERTED and its "off" is 100, not 0.**
 `getBitDepthDynamic(v) = 1 + v^8 * 65535`, and `Vco::setOscBitcrusher` treats
 `v == 1.0` as the only disable condition. So display **0 = 1-bit destruction**,
-100 = bypass, and the `^8` curve means nothing audible happens below ~70.
-`tools/presets/base.mjs` carries `bitcrush: 100` for exactly this reason —
-never omit it from a generated preset.
+100 = bypass, and the `^8` curve means nothing audible happens below ~70. Any
+patch written by hand or by a tool must set it to 100 explicitly — a state dict
+that simply omits it lands on full destruction.
 
 **LFO waveform is NOT the combo formula.** `LfoHandler::setWaveform` does
 `(int)(v * 5.000001f)` → 0..5. That is `K_LFOWAVE` in the wrapper; using
@@ -153,8 +153,6 @@ their exact original feedback and merely read out in gain space.
 ./scripts/build.sh                      # regenerates module.json + wave anchors + canvas.js, then the ARM cross-build
 ./scripts/install.sh                    # scp + md5-verify + restart_move.sh   (SKIP_RESTART=1 to copy only)
 MOVE_HOST=root@172.16.254.1 ./scripts/install.sh    # tether
-./tools/build_presets.sh                # gen -> autogain -> verify   (never run gen alone)
-BANK=sw ./tools/build_presets.sh        # the synthwave bank
 ./build/macro_test                      # off-device macro tests  (see NOTE below)
 build/nm_render --state P.json --analyze --set k=v   # render/measure one patch
 node tools/render_canvas.mjs out.png    # every bank + the macro HUD states
@@ -181,20 +179,30 @@ node tools/render_canvas.mjs out.png    # every bank + the macro HUD states
   which is what satisfies the cross-dependent setters. Regenerate after any
   `Params.h`/XML change. Preset 0 loads at create. Many factory patches are
   genuinely mono (`voices=1` — TAL basses/leads); not a bug.
-- **Authored presets** live in `tools/presets/*.mjs` in two banks — **JG** (146,
-  the original) and **SW** (64, synthwave). `base.mjs` holds the shared defaults
-  and `catOf()`. ⚠ `autogain_presets.mjs` and `verify_presets.mjs` pick their
-  audition plan (notes/hold/tail) from the category token in the name; any new
-  bank prefix must be added to `BANK_TAGS` in `base.mjs` or a bass gets levelled
-  with the lead plan and still looks fine. The SW generator **rejects** a preset
-  with no live mod route (dest set but depth zero was how the JG bank shipped
-  146 static patches).
+- **There are no authored presets.** The module ships the 256 TAL factory programs
+  and nothing else. Two generated banks (JG, 146; SW, 64) were built and removed on
+  2026-07-29 — see the note below before writing a third.
 
-## Open items
+## ⚠ Before generating another preset bank
 
-- **Ear-check owed** on the SW bank, then cull; decide whether it replaces JG.
-  If JG survives, its 18 numbered variants still need picking. Neither bank uses
-  the Envelope Editor — the obvious next bank.
+Two attempts, both abandoned. If a third is proposed, the failures worth not
+repeating — all of them *authoring* faults, not engine ones:
+
+- **JG shipped 146 static patches.** `base.mjs` set a modulation amount on every
+  preset and left the destination Off, so the state dicts looked modulated and
+  nothing moved: LFO1 routed on 6/146, the free env and Envelope Editor on **zero**.
+  Measured median centroid 706 Hz, `cutoff` never above 64, and the same reverb+delay
+  wash on all 146.
+- **SW fixed the routing and still missed.** 100 % modulated and much brighter by
+  every metric, and Josh's verdict was still no.
+- A generator can enforce "has a live route" (SW's did) and cannot enforce *good*.
+  The gap between "measures well" and "sounds good" is where both banks died.
+- The measurement that drove the SW rework was itself broken for a while:
+  `spectralCentroid` sampled a silent point and capped near 2.7 kHz, so it could only
+  ever answer "dark". Any brightness claim in a worklog predating `94064ec` is void.
+
+If there is a next one, the lever nobody has pulled is the **Envelope Editor** —
+unused by both banks.
 - **Bipolar params** (tunes/detune) display as -100..100 %; refine to
   semitones/cents once heard.
 - No aftertouch/modwheel routing yet (engine has no direct hook); revisit.
