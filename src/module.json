@@ -2,7 +2,7 @@
   "id": "noisemaker",
   "name": "Noisemaker",
   "abbrev": "NM",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Virtual-analog synth ported from TAL Noisemaker (Patrick Kunz). 6-voice, dual osc + sub, 12 multimode filters, 2 LFOs, spline mod-envelope, chorus + reverb + delay. 256 factory presets, plus import your own banks of .noisemakerpreset files.",
   "author": "legsmechanical (engine: Patrick Kunz / TAL)",
   "license": "GPL-2.0",
