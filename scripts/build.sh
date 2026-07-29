@@ -79,6 +79,14 @@ cat src/canvas.js > "dist/$ID/canvas.js"
 cat build/dsp.so > "dist/$ID/dsp.so"
 chmod +x "dist/$ID/dsp.so"
 
+# Bundled module presets. NOT dead code, and not where the factory sounds live:
+# the 256 TAL factory programs are COMPILED IN (src/dsp/factory_bank.h +
+# factory_splines.h -> dsp.so), so they ship in every release automatically.
+# This block is for loose Module-Preset JSON files that should travel WITH the
+# module. It is currently unused -- src/presets/ is absent -- but keep it: a
+# release is supposed to be able to carry presets. (What must never end up here
+# is third-party preset packs; those are user imports and live outside the
+# module dir entirely, under /data/UserData/schwung/preset-banks/noisemaker/.)
 if [ -d "src/presets" ] && ls src/presets/* &>/dev/null; then
     mkdir -p "dist/$ID/presets"
     for f in src/presets/*; do cat "$f" > "dist/$ID/presets/$(basename "$f")"; done
