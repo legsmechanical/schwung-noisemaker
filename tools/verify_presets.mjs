@@ -16,6 +16,11 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/* Names may carry a leading bank tag ("SW ..."), so the category is NOT
+ * reliably the first token -- catOf() skips the tag. Getting this wrong is
+ * silent: a bass would simply be auditioned with the generic lead plan. */
+import { catOf } from "./presets/base.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..");
 const dir = process.argv[2] && !process.argv[2].startsWith("--")
@@ -27,7 +32,7 @@ if (wavDir) mkdirSync(wavDir, { recursive: true });
 /* Play something idiomatic per category rather than one note for everything —
  * a pad judged on a single short note tells you nothing. */
 function planFor(name) {
-  const cat = name.split(" ")[0];
+  const cat = catOf(name);
   if (cat === "BS") return { notes: "36,48", hold: "1.0", tail: "1.2" };
   if (cat === "DR") return { notes: "48",    hold: "0.2", tail: "1.2" };
   if (cat === "PD") return { notes: "48,55,60,64", hold: "2.5", tail: "3.5" };

@@ -132,14 +132,27 @@ export function wrap(name, state) {
  *
  * Variants inherit the spec's fx layers unless they supply their own `fx`.
  *
- * `spec.tag` replaces the trailing "JG" and is how a second bank coexists with
- * the first in the same preset store. It is a SUFFIX rather than a prefix on
- * purpose: both autogain_presets.mjs and verify_presets.mjs derive the render
- * plan from the FIRST token of the name (`planFor`), so a "SW BS Foo" would
- * silently be auditioned with the generic lead plan instead of the bass one. */
+ * How a second bank coexists with the first in the same preset store:
+ *   `spec.prefix` puts a bank tag FIRST  -> "SW BS Nightdrive"  (sorts together)
+ *   `spec.tag`    replaces the trailing "JG"
+ * A prefix means the category is no longer the first token, and both
+ * autogain_presets.mjs and verify_presets.mjs pick the render plan from the
+ * name — see `catOf()` in each. Adding a new prefix without teaching them
+ * about it silently auditions every bass with the generic lead plan. */
+export const BANK_TAGS = ["SW"];
+
+/* The category token, skipping any leading bank tag. Mirrored in the two
+ * preset tools; keep them in step. */
+export function catOf(name) {
+  const t = String(name).split(" ");
+  return BANK_TAGS.includes(t[0]) ? t[1] : t[0];
+}
+
 export function expand(spec) {
   const out = [];
-  const tag = spec.tag || "JG";
+  const prefix = spec.prefix ? `${spec.prefix} ` : "";
+  const tag = spec.tag !== undefined ? spec.tag : (spec.prefix ? "" : "JG");
+  const suffix = tag ? ` ${tag}` : "";
   const mk = (name, extraFx, extraP) => {
     const s = { ...DEFAULTS };
     for (const layer of (extraFx || spec.fx || [])) Object.assign(s, layer);
@@ -147,10 +160,10 @@ export function expand(spec) {
     out.push(wrap(name, s));
   };
   if (!spec.vars || !spec.vars.length) {
-    mk(`${spec.cat} ${spec.name} ${tag}`);
+    mk(`${prefix}${spec.cat} ${spec.name}${suffix}`);
   } else {
     spec.vars.forEach((v, i) => {
-      mk(`${spec.cat} ${spec.name} ${i + 1} ${tag}`, v.fx, v.p);
+      mk(`${prefix}${spec.cat} ${spec.name} ${i + 1}${suffix}`, v.fx, v.p);
     });
   }
   return out;

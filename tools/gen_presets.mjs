@@ -14,7 +14,7 @@
 import { writeFileSync, mkdirSync, readdirSync, unlinkSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expand, DEFAULTS } from "./presets/base.mjs";
+import { expand, DEFAULTS, catOf } from "./presets/base.mjs";
 
 import bass from "./presets/bass.mjs";
 import leads from "./presets/leads.mjs";
@@ -26,8 +26,9 @@ import synthwave from "./presets/synthwave.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/* Two banks live in the same preset store, told apart by their name suffix
- * ("JG" / "SW"). --bank picks which one this run emits; the default stays the
+/* Two banks live in the same preset store, told apart by their name tag: the
+ * original trails "JG", the synthwave one LEADS with "SW" so it groups in the
+ * browser. --bank picks which one this run emits; the default stays the
  * original so nothing that used to call this script changes behaviour.
  * --keep leaves existing .json in the output directory alone, which is how the
  * two banks end up side by side on the device for A/B. */
@@ -83,7 +84,7 @@ for (const p of presets) {
    * never assigned, so it LOOKED modulated in the state dict and was static.
    * A destination with no depth (or depth with no destination) is the same
    * bug wearing a different hat, so require both on at least one route. */
-  if (p.name.endsWith(" SW")) {
+  if (p.name.startsWith("SW ")) {
     const routes = [
       [p.state.lfo1_dest, p.state.lfo1_amount],
       [p.state.lfo2_dest, p.state.lfo2_amount],
@@ -116,7 +117,7 @@ for (const p of presets) {
 
 const byCat = {};
 for (const p of presets) {
-  const c = p.name.split(" ")[0];
+  const c = catOf(p.name);
   byCat[c] = (byCat[c] || 0) + 1;
 }
 console.log(`wrote ${presets.length} presets -> ${outDir}`);
